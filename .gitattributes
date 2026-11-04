@@ -1,0 +1,6 @@
+# Единые переводы строк для сборки на Windows и Linux.
+# В репозитории и рабочей копии — LF; bat/cmd оставляем с CRLF.
+* text=auto eol=lf
+
+*.bat text eol=crlf
+*.cmd text eol=crlf
