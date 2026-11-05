@@ -21,6 +21,8 @@ use crate::error::{AppError, AppResult};
 const APP_DIR_NAME: &str = "MyFilmLibrary";
 pub const DATA_DIR_ENV: &str = "MY_FILM_LIBRARY_DATA_DIR";
 const MAX_IMAGE_DIMENSION: u32 = 8_000;
+pub const POSTER_THUMB_WIDTH: u32 = 300;
+pub const POSTER_THUMB_HEIGHT: u32 = 450;
 
 /// Все пути, которые нужны приложению во время работы.
 #[derive(Debug, Clone)]
@@ -28,6 +30,7 @@ pub struct AppPaths {
     pub data_dir: PathBuf,
     pub db_path: PathBuf,
     pub posters_dir: PathBuf,
+    pub screenshots_dir: PathBuf,
 }
 
 impl AppPaths {
@@ -50,11 +53,14 @@ impl AppPaths {
     pub fn from_data_dir(data_dir: PathBuf) -> AppResult<Self> {
         let posters_dir = data_dir.join("posters");
         fs::create_dir_all(&posters_dir)?;
+        let screenshots_dir = data_dir.join("screenshots");
+        fs::create_dir_all(&screenshots_dir)?;
 
         Ok(Self {
             db_path: data_dir.join("library.db"),
             data_dir,
             posters_dir,
+            screenshots_dir,
         })
     }
 
@@ -76,6 +82,29 @@ impl AppPaths {
             && let Some(file_name) = poster_file_name(&normalized)
         {
             return self.posters_dir.join(file_name);
+        }
+
+        self.data_dir.join(path)
+    }
+
+    /// Путь к миниатюре обложки (если она существует), иначе оригинал.
+    pub fn resolve_poster_thumbnail(&self, stored_path: &str) -> PathBuf {
+        if let Some(file_name) = poster_file_name(stored_path) {
+            let thumb = self.posters_dir.join(format!("thumb_{file_name}"));
+            if thumb.is_file() {
+                return thumb;
+            }
+        }
+        self.resolve_poster(stored_path)
+    }
+
+    /// Преобразует путь к кадру в абсолютный путь.
+    pub fn resolve_screenshot(&self, stored_path: &str) -> PathBuf {
+        let normalized = stored_path.replace('\\', "/");
+        let path = Path::new(&normalized);
+
+        if path.is_absolute() {
+            return path.to_path_buf();
         }
 
         self.data_dir.join(path)
@@ -264,12 +293,19 @@ pub fn import_poster(source: &Path, paths: &AppPaths) -> AppResult<ImportedPoste
     };
 
     let file_name = format!("{stem}-{}.{extension}", unique_suffix());
-    let destination = paths.posters_dir.join(file_name);
+    let destination = paths.posters_dir.join(&file_name);
 
     if let Err(error) = fs::copy(source, &destination) {
         // Не оставляем частично скопированный файл.
         let _ = fs::remove_file(&destination);
         return Err(error.into());
+    }
+
+    // Генерируем уменьшенную копию (300x450) для сетки
+    if let Ok(img) = image::open(&destination) {
+        let thumb = img.thumbnail(POSTER_THUMB_WIDTH, POSTER_THUMB_HEIGHT);
+        let thumb_dest = paths.posters_dir.join(format!("thumb_{file_name}"));
+        let _ = thumb.save(&thumb_dest);
     }
 
     Ok(imported_poster(destination))
@@ -286,9 +322,9 @@ pub fn import_poster_image(
     let (width, height) = image.dimensions();
     validate_image_size(width, height)?;
 
-    let destination = paths
-        .posters_dir
-        .join(format!("poster-{}.png", unique_suffix()));
+    let suffix = unique_suffix();
+    let file_name = format!("poster-{suffix}.png");
+    let destination = paths.posters_dir.join(&file_name);
 
     if let Err(error) = image::save_buffer_with_format(
         &destination,
@@ -301,6 +337,12 @@ pub fn import_poster_image(
         let _ = fs::remove_file(&destination);
         return Err(error.into());
     }
+
+    // Генерируем уменьшенную копию (300x450) для сетки
+    let dynamic = image::DynamicImage::ImageRgba8(image.clone());
+    let thumb = dynamic.thumbnail(POSTER_THUMB_WIDTH, POSTER_THUMB_HEIGHT);
+    let thumb_dest = paths.posters_dir.join(format!("thumb_{file_name}"));
+    let _ = thumb.save(&thumb_dest);
 
     Ok(imported_poster(destination))
 }
@@ -327,6 +369,72 @@ fn imported_poster(destination: PathBuf) -> ImportedPoster {
 pub fn delete_poster(paths: &AppPaths, stored_path: &str) -> AppResult<()> {
     let path = paths.resolve_poster(stored_path);
     if path.parent() != Some(paths.posters_dir.as_path()) {
+        return Err(AppError::InvalidPosterPath(path));
+    }
+
+    if let Some(name) = poster_file_name(stored_path) {
+        let thumb = paths.posters_dir.join(format!("thumb_{name}"));
+        let _ = fs::remove_file(thumb);
+    }
+
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+/// Импортирует файл скриншота/кадра в хранилище приложения.
+pub fn import_screenshot(source: &Path, paths: &AppPaths) -> AppResult<ImportedPoster> {
+    let format = validate_poster(source)?;
+    let extension = format.extensions_str().first().copied().unwrap_or("png");
+    let file_name = format!("screenshot-{}.{extension}", unique_suffix());
+    let destination = paths.screenshots_dir.join(&file_name);
+
+    if let Err(error) = fs::copy(source, &destination) {
+        let _ = fs::remove_file(&destination);
+        return Err(error.into());
+    }
+
+    Ok(ImportedPoster {
+        relative_path: format!("screenshots/{file_name}"),
+        absolute_path: destination,
+    })
+}
+
+/// Сохраняет изображение скриншота/кадра из буфера обмена.
+pub fn import_screenshot_image(
+    image: &image::RgbaImage,
+    paths: &AppPaths,
+) -> AppResult<ImportedPoster> {
+    let (width, height) = image.dimensions();
+    validate_image_size(width, height)?;
+
+    let file_name = format!("screenshot-{}.png", unique_suffix());
+    let destination = paths.screenshots_dir.join(&file_name);
+
+    if let Err(error) = image::save_buffer_with_format(
+        &destination,
+        image.as_raw(),
+        width,
+        height,
+        image::ColorType::Rgba8,
+        ImageFormat::Png,
+    ) {
+        let _ = fs::remove_file(&destination);
+        return Err(error.into());
+    }
+
+    Ok(ImportedPoster {
+        relative_path: format!("screenshots/{file_name}"),
+        absolute_path: destination,
+    })
+}
+
+/// Удаляет файл кадра/скриншота.
+pub fn delete_screenshot_file(paths: &AppPaths, stored_path: &str) -> AppResult<()> {
+    let path = paths.resolve_screenshot(stored_path);
+    if path.parent() != Some(paths.screenshots_dir.as_path()) {
         return Err(AppError::InvalidPosterPath(path));
     }
 

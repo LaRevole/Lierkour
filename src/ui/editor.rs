@@ -7,8 +7,8 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::error::AppError;
 use crate::models::{
-    Film, FilmStatus, MAX_RUNTIME_MINUTES, MAX_SEASONS, MAX_YEAR, NewFilm, RelatedFilm,
-    RelationKind, split_comma_list,
+    Film, FilmScreenshot, FilmStatus, MAX_RUNTIME_MINUTES, MAX_SEASONS, MAX_YEAR, NewFilm,
+    RelatedFilm, RelationKind, split_comma_list,
 };
 use crate::storage::{self, AppPaths};
 use crate::ui::poster_cache::{self, PosterCache};
@@ -31,6 +31,9 @@ pub enum EditorAction {
     },
     RemoveRelation(i64),
     OpenRelated(i64),
+    AddScreenshotFile(PathBuf),
+    AddScreenshotClipboard(Arc<image::RgbaImage>),
+    DeleteScreenshot(i64),
 }
 
 /// Обложка, подготовленная в редакторе, но ещё не сохранённая.
@@ -61,6 +64,9 @@ pub struct EditorState {
     pub watched_seasons: Vec<u16>,
     pub description: String,
     pub thoughts: String,
+    pub quotes: Vec<String>,
+    pub new_quote_input: String,
+    pub screenshots: Vec<FilmScreenshot>,
 
     /// Связи текущего фильма (загружаются приложением из БД).
     pub relations: Vec<RelatedFilm>,
@@ -108,6 +114,9 @@ impl EditorState {
             watched_seasons: Vec::new(),
             description: String::new(),
             thoughts: String::new(),
+            quotes: Vec::new(),
+            new_quote_input: String::new(),
+            screenshots: Vec::new(),
             relations: Vec::new(),
             relation_candidates: Vec::new(),
             relation_kind: RelationKind::Sequel,
@@ -142,6 +151,9 @@ impl EditorState {
             watched_seasons: film.watched_seasons.clone(),
             description: film.description.clone(),
             thoughts: film.thoughts.clone(),
+            quotes: film.quotes.clone(),
+            new_quote_input: String::new(),
+            screenshots: Vec::new(),
             relations: Vec::new(),
             relation_candidates: Vec::new(),
             relation_kind: RelationKind::Sequel,
@@ -175,6 +187,7 @@ impl EditorState {
             poster_path,
             seasons_total: self.seasons_total,
             watched_seasons: self.watched_seasons.clone(),
+            quotes: self.quotes.clone(),
         }
     }
 
@@ -217,52 +230,107 @@ pub fn show(
         paste_poster(&ctx, state);
     }
 
+    let colors = theme::colors(ui.ctx());
+
     egui::Panel::top("editor_top_bar")
         .frame(
             egui::Frame::new()
-                .fill(theme::SURFACE)
-                .inner_margin(egui::Margin::symmetric(16, 10)),
+                .fill(colors.surface)
+                .stroke(egui::Stroke::new(1.0, colors.border))
+                .inner_margin(egui::Margin::symmetric(16, 12)),
         )
         .show(ui, |ui| {
-            ui.horizontal(|ui| {
-                if ui.button("← Назад").clicked() {
-                    action = EditorAction::Cancel;
-                }
-
-                ui.add_space(6.0);
-                ui.heading(if state.film_id.is_some() {
-                    "Редактирование фильма"
-                } else {
-                    "Новый фильм"
+            let is_narrow = ui.available_width() < 640.0;
+            if is_narrow {
+                ui.horizontal(|ui| {
+                    if ui.button("<- Назад").clicked() {
+                        action = EditorAction::Cancel;
+                    }
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(if state.film_id.is_some() {
+                            "Редактирование фильма"
+                        } else {
+                            "Новый фильм"
+                        })
+                        .heading()
+                        .strong()
+                        .color(colors.text),
+                    );
                 });
-
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add(save_button()).clicked() {
+                ui.add_space(6.0);
+                ui.horizontal_wrapped(|ui| {
+                    if ui.add(save_button(colors)).clicked() {
                         action = EditorAction::Save;
                     }
-
                     if let Some(id) = state.film_id
                         && ui
                             .add(
                                 egui::Button::new(
-                                    RichText::new("Удалить фильм").color(theme::DANGER),
+                                    RichText::new("Удалить фильм").color(colors.danger),
                                 )
-                                .fill(theme::DANGER.gamma_multiply(0.12)),
+                                .fill(colors.danger.gamma_multiply(0.12)),
                             )
                             .clicked()
                     {
                         action = EditorAction::Delete(id);
                     }
-
-                    ui.label(RichText::new("Ctrl+Enter").small().color(theme::TEXT_MUTED));
+                    ui.label(
+                        RichText::new("Ctrl+Enter / Ctrl+S")
+                            .small()
+                            .color(colors.text_muted),
+                    );
                 });
-            });
+            } else {
+                ui.horizontal(|ui| {
+                    if ui.button("<- Назад").clicked() {
+                        action = EditorAction::Cancel;
+                    }
+
+                    ui.add_space(6.0);
+                    ui.label(
+                        RichText::new(if state.film_id.is_some() {
+                            "Редактирование фильма"
+                        } else {
+                            "Новый фильм"
+                        })
+                        .heading()
+                        .strong()
+                        .color(colors.text),
+                    );
+
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if ui.add(save_button(colors)).clicked() {
+                            action = EditorAction::Save;
+                        }
+
+                        if let Some(id) = state.film_id
+                            && ui
+                                .add(
+                                    egui::Button::new(
+                                        RichText::new("Удалить фильм").color(colors.danger),
+                                    )
+                                    .fill(colors.danger.gamma_multiply(0.12)),
+                                )
+                                .clicked()
+                        {
+                            action = EditorAction::Delete(id);
+                        }
+
+                        ui.label(
+                            RichText::new("Ctrl+Enter / Ctrl+S")
+                                .small()
+                                .color(colors.text_muted),
+                        );
+                    });
+                });
+            }
         });
 
     egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
-                .fill(theme::BG)
+                .fill(colors.bg)
                 .inner_margin(egui::Margin::same(18)),
         )
         .show(ui, |ui| {
@@ -270,11 +338,12 @@ pub fn show(
                 .id_salt(("editor_scroll", state.scroll_salt))
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.horizontal_top(|ui| {
+                    let is_narrow_content = ui.available_width() < 700.0;
+                    if is_narrow_content {
                         poster_column(ui, state, paths, posters);
-                        ui.add_space(12.0);
+                        ui.add_space(10.0);
                         ui.separator();
-                        ui.add_space(12.0);
+                        ui.add_space(10.0);
                         fields_column(
                             ui,
                             state,
@@ -283,26 +352,47 @@ pub fn show(
                             metadata_busy,
                             &mut action,
                         );
-                    });
+                    } else {
+                        ui.horizontal_top(|ui| {
+                            poster_column(ui, state, paths, posters);
+                            ui.add_space(12.0);
+                            ui.separator();
+                            ui.add_space(12.0);
+                            fields_column(
+                                ui,
+                                state,
+                                categories,
+                                tag_suggestions,
+                                metadata_busy,
+                                &mut action,
+                            );
+                        });
+                    }
 
                     ui.add_space(8.0);
                     relations_editor(ui, state, &mut action);
 
+                    ui.add_space(8.0);
+                    quotes_editor(ui, state);
+
+                    ui.add_space(8.0);
+                    screenshots_gallery(ui, state, paths, posters, &mut action);
+
                     if let Some(error) = &state.form_error {
                         ui.add_space(12.0);
                         egui::Frame::new()
-                            .fill(theme::DANGER.gamma_multiply(0.12))
-                            .stroke(egui::Stroke::new(1.0, theme::DANGER.gamma_multiply(0.5)))
+                            .fill(colors.danger.gamma_multiply(0.12))
+                            .stroke(egui::Stroke::new(1.0, colors.danger.gamma_multiply(0.5)))
                             .corner_radius(egui::CornerRadius::same(8))
                             .inner_margin(egui::Margin::same(10))
                             .show(ui, |ui| {
-                                ui.colored_label(theme::DANGER, error);
+                                ui.colored_label(colors.danger, error);
                             });
                     }
 
                     ui.add_space(18.0);
                     ui.horizontal(|ui| {
-                        if ui.add(save_button()).clicked() {
+                        if ui.add(save_button(colors)).clicked() {
                             action = EditorAction::Save;
                         }
                         if ui.button("Отмена").clicked() {
@@ -315,13 +405,13 @@ pub fn show(
     action
 }
 
-fn save_button() -> egui::Button<'static> {
-    egui::Button::new(
-        RichText::new("Сохранить")
-            .strong()
-            .color(Color32::from_rgb(22, 20, 15)),
-    )
-    .fill(theme::ACCENT)
+fn save_button(colors: theme::ThemeColors) -> egui::Button<'static> {
+    let text_color = if colors.is_dark {
+        Color32::from_rgb(20, 20, 20)
+    } else {
+        Color32::WHITE
+    };
+    egui::Button::new(RichText::new("Сохранить").strong().color(text_color)).fill(colors.accent)
 }
 
 fn poster_column(
@@ -566,6 +656,7 @@ fn seasons_editor(ui: &mut egui::Ui, state: &mut EditorState) {
         .watched_seasons
         .retain(|season| *season >= 1 && *season <= total);
 
+    let colors = theme::colors(ui.ctx());
     let watched_count = state.watched_seasons.len();
     let fully_watched = watched_count >= total as usize;
 
@@ -578,9 +669,9 @@ fn seasons_editor(ui: &mut egui::Ui, state: &mut EditorState) {
         })
         .small()
         .color(if fully_watched {
-            theme::SUCCESS
+            colors.success
         } else {
-            theme::ACCENT
+            colors.accent
         }),
     );
 
@@ -597,9 +688,13 @@ fn seasons_editor(ui: &mut egui::Ui, state: &mut EditorState) {
         for season in 1..=total {
             let watched = state.watched_seasons.contains(&season);
             let text_color = if watched {
-                Color32::from_rgb(22, 20, 15)
+                if colors.is_dark {
+                    Color32::from_rgb(20, 20, 20)
+                } else {
+                    Color32::WHITE
+                }
             } else {
-                theme::TEXT_MUTED
+                colors.text_muted
             };
             let button = egui::Button::new(
                 RichText::new(season.to_string())
@@ -608,16 +703,16 @@ fn seasons_editor(ui: &mut egui::Ui, state: &mut EditorState) {
                     .color(text_color),
             )
             .fill(if watched {
-                theme::ACCENT
+                colors.accent
             } else {
-                theme::SURFACE_HOVER
+                colors.surface_hover
             })
             .stroke(egui::Stroke::new(
                 1.0,
                 if watched {
-                    theme::ACCENT
+                    colors.accent
                 } else {
-                    theme::BORDER
+                    colors.border
                 },
             ))
             .min_size(egui::vec2(30.0, 26.0));
@@ -673,17 +768,19 @@ fn add_tag(tags: &mut String, tag: &str) {
 }
 
 fn relations_editor(ui: &mut egui::Ui, state: &mut EditorState, action: &mut EditorAction) {
+    let colors = theme::colors(ui.ctx());
     ui.separator();
     ui.add_space(8.0);
     ui.label(
         RichText::new("Связи с другими фильмами")
             .strong()
-            .size(16.0),
+            .size(16.0)
+            .color(colors.text),
     );
     ui.label(
         RichText::new("Например: «Дюна: Часть вторая» — сиквел «Дюны».")
             .small()
-            .color(theme::TEXT_MUTED),
+            .color(colors.text_muted),
     );
     ui.add_space(4.0);
 
@@ -691,7 +788,7 @@ fn relations_editor(ui: &mut egui::Ui, state: &mut EditorState, action: &mut Edi
         ui.label(
             RichText::new("Сначала сохраните фильм — после этого можно добавить связи.")
                 .small()
-                .color(theme::TEXT_MUTED),
+                .color(colors.text_muted),
         );
         return;
     };
@@ -700,7 +797,7 @@ fn relations_editor(ui: &mut egui::Ui, state: &mut EditorState, action: &mut Edi
         ui.label(
             RichText::new("В библиотеке пока нет других фильмов для связи.")
                 .small()
-                .color(theme::TEXT_MUTED),
+                .color(colors.text_muted),
         );
         return;
     }
@@ -752,7 +849,7 @@ fn relations_editor(ui: &mut egui::Ui, state: &mut EditorState, action: &mut Edi
                             ui.label(
                                 RichText::new("Ничего не найдено")
                                     .small()
-                                    .color(theme::TEXT_MUTED),
+                                    .color(colors.text_muted),
                             );
                         }
                     });
@@ -780,14 +877,19 @@ fn relations_editor(ui: &mut egui::Ui, state: &mut EditorState, action: &mut Edi
         ui.label(
             RichText::new("Связей пока нет.")
                 .small()
-                .color(theme::TEXT_MUTED),
+                .color(colors.text_muted),
         );
     } else {
         for relation in &state.relations {
             ui.horizontal(|ui| {
+                let fill_alpha = if colors.is_dark { 0.16 } else { 0.12 };
+                let stroke_alpha = if colors.is_dark { 0.5 } else { 0.35 };
                 egui::Frame::new()
-                    .fill(theme::ACCENT.gamma_multiply(0.16))
-                    .stroke(egui::Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.5)))
+                    .fill(colors.accent.gamma_multiply(fill_alpha))
+                    .stroke(egui::Stroke::new(
+                        1.0,
+                        colors.accent.gamma_multiply(stroke_alpha),
+                    ))
                     .corner_radius(egui::CornerRadius::same(6))
                     .inner_margin(egui::Margin::symmetric(8, 3))
                     .show(ui, |ui| {
@@ -795,7 +897,7 @@ fn relations_editor(ui: &mut egui::Ui, state: &mut EditorState, action: &mut Edi
                             RichText::new(relation.label())
                                 .size(11.0)
                                 .strong()
-                                .color(theme::ACCENT),
+                                .color(colors.accent),
                         );
                     });
 
@@ -814,16 +916,16 @@ fn relations_editor(ui: &mut egui::Ui, state: &mut EditorState, action: &mut Edi
                     ui.label(
                         RichText::new(year.to_string())
                             .small()
-                            .color(theme::TEXT_MUTED),
+                            .color(colors.text_muted),
                     );
                 }
                 if let Some(runtime) = relation.film.runtime_label() {
-                    ui.label(RichText::new(runtime).small().color(theme::TEXT_MUTED));
+                    ui.label(RichText::new(runtime).small().color(colors.text_muted));
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if ui
-                        .small_button(RichText::new("Удалить").color(theme::DANGER))
+                        .small_button(RichText::new("Удалить").color(colors.danger))
                         .clicked()
                     {
                         *action = EditorAction::RemoveRelation(relation.relation_id);
@@ -837,7 +939,7 @@ fn relations_editor(ui: &mut egui::Ui, state: &mut EditorState, action: &mut Edi
     ui.label(
         RichText::new("Связи сохраняются сразу, независимо от кнопки «Сохранить».")
             .small()
-            .color(theme::TEXT_MUTED),
+            .color(colors.text_muted),
     );
 }
 
@@ -1107,4 +1209,186 @@ fn fields_column(
                 .color(theme::TEXT_MUTED),
         );
     });
+}
+
+fn quotes_editor(ui: &mut egui::Ui, state: &mut EditorState) {
+    let colors = theme::colors(ui.ctx());
+    ui.separator();
+    ui.add_space(8.0);
+    ui.label(
+        RichText::new("Цитаты и любимые моменты")
+            .strong()
+            .size(16.0)
+            .color(colors.text),
+    );
+    ui.label(
+        RichText::new("Запоминающиеся реплики и фразы из фильма.")
+            .small()
+            .color(colors.text_muted),
+    );
+    ui.add_space(6.0);
+
+    ui.horizontal(|ui| {
+        let text_res = ui.add(
+            egui::TextEdit::singleline(&mut state.new_quote_input)
+                .hint_text("Введите цитату...")
+                .desired_width(450.0),
+        );
+        let add_clicked = ui.button("+ Добавить").clicked();
+        let enter_pressed = text_res.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+
+        if (add_clicked || enter_pressed) && !state.new_quote_input.trim().is_empty() {
+            state.quotes.push(state.new_quote_input.trim().to_owned());
+            state.new_quote_input.clear();
+        }
+    });
+
+    if !state.quotes.is_empty() {
+        ui.add_space(8.0);
+        let mut to_remove = None;
+        for (idx, quote) in state.quotes.iter().enumerate() {
+            egui::Frame::new()
+                .fill(colors.card_bg)
+                .stroke(egui::Stroke::new(1.0, colors.card_stroke))
+                .corner_radius(egui::CornerRadius::same(6))
+                .inner_margin(egui::Margin::symmetric(12, 8))
+                .show(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        let (rect, _) = ui
+                            .allocate_exact_size(egui::Vec2::new(3.0, 18.0), egui::Sense::hover());
+                        ui.painter()
+                            .rect_filled(rect, egui::CornerRadius::same(1), colors.accent);
+                        ui.add_space(6.0);
+                        ui.label(
+                            RichText::new(format!("«{quote}»"))
+                                .italics()
+                                .color(colors.text),
+                        );
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .small_button("x")
+                                .on_hover_text("Удалить цитату")
+                                .clicked()
+                            {
+                                to_remove = Some(idx);
+                            }
+                        });
+                    });
+                });
+            ui.add_space(4.0);
+        }
+        if let Some(idx) = to_remove {
+            state.quotes.remove(idx);
+        }
+    }
+}
+
+fn screenshots_gallery(
+    ui: &mut egui::Ui,
+    state: &mut EditorState,
+    paths: &AppPaths,
+    posters: &mut PosterCache,
+    action: &mut EditorAction,
+) {
+    let colors = theme::colors(ui.ctx());
+    ui.separator();
+    ui.add_space(8.0);
+    ui.horizontal(|ui| {
+        ui.label(
+            RichText::new("Кадры и скриншоты")
+                .strong()
+                .size(16.0)
+                .color(colors.text),
+        );
+        ui.add_space(8.0);
+
+        if state.film_id.is_some() {
+            if ui.button("+ Добавить кадр").clicked()
+                && let Some(file) = rfd::FileDialog::new()
+                    .add_filter("Изображения", &["png", "jpg", "jpeg", "webp", "bmp", "gif"])
+                    .pick_file()
+            {
+                *action = EditorAction::AddScreenshotFile(file);
+            }
+
+            if ui.button("Вставить из буфера").clicked()
+                && let Ok(mut clipboard) = arboard::Clipboard::new()
+                && let Ok(img) = clipboard.get_image()
+            {
+                let rgba = image::RgbaImage::from_raw(
+                    img.width as u32,
+                    img.height as u32,
+                    img.bytes.into_owned(),
+                );
+                if let Some(rgba) = rgba {
+                    *action = EditorAction::AddScreenshotClipboard(Arc::new(rgba));
+                }
+            }
+        }
+    });
+
+    if state.film_id.is_none() {
+        ui.label(
+            RichText::new("Сначала сохраните фильм — после этого можно добавлять кадры.")
+                .small()
+                .color(colors.text_muted),
+        );
+        return;
+    }
+
+    if state.screenshots.is_empty() {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("К фильму пока не добавлено ни одного кадра.")
+                .small()
+                .color(colors.text_muted),
+        );
+        return;
+    }
+
+    ui.add_space(8.0);
+    let mut delete_id = None;
+
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::Vec2::new(10.0, 10.0);
+        for shot in &state.screenshots {
+            egui::Frame::new()
+                .fill(colors.card_bg)
+                .stroke(egui::Stroke::new(1.0, colors.card_stroke))
+                .corner_radius(egui::CornerRadius::same(8))
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    ui.vertical(|ui| {
+                        ui.set_width(180.0);
+                        let texture =
+                            posters.screenshot_texture(ui.ctx(), paths, &shot.image_path, 360);
+                        widgets::paint_poster(ui, egui::vec2(180.0, 110.0), texture.as_ref());
+
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if !shot.caption.is_empty() {
+                                ui.label(
+                                    RichText::new(&shot.caption)
+                                        .size(11.0)
+                                        .color(colors.text_muted),
+                                );
+                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    if ui.small_button("x").on_hover_text("Удалить кадр").clicked()
+                                    {
+                                        delete_id = Some(shot.id);
+                                    }
+                                },
+                            );
+                        });
+                    });
+                });
+        }
+    });
+
+    if let Some(id) = delete_id {
+        *action = EditorAction::DeleteScreenshot(id);
+    }
 }

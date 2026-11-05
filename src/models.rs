@@ -167,6 +167,66 @@ pub struct FilmRelation {
     pub kind: RelationKind,
 }
 
+/// Кадр или скриншот фильма.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FilmScreenshot {
+    pub id: i64,
+    pub film_id: i64,
+    pub image_path: String,
+    #[serde(default)]
+    pub caption: String,
+    pub position: i64,
+}
+
+/// Черновик нового скриншота при добавлении к фильму.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[allow(dead_code)]
+pub struct NewScreenshot {
+    pub image_path: String,
+    pub caption: String,
+    pub position: i64,
+}
+
+/// Тема оформления интерфейса.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppTheme {
+    #[default]
+    Dark,
+    Light,
+}
+
+impl AppTheme {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Dark => "dark",
+            Self::Light => "light",
+        }
+    }
+
+    pub fn from_str_opt(s: &str) -> Option<Self> {
+        match s {
+            "dark" => Some(Self::Dark),
+            "light" => Some(Self::Light),
+            _ => None,
+        }
+    }
+}
+
+/// Сводная статистика библиотеки для страницы профиля (Dashboard).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct DashboardStats {
+    pub total_films: usize,
+    pub watched_films: usize,
+    pub want_to_watch: usize,
+    pub watching: usize,
+    pub dropped: usize,
+    pub average_rating: Option<f64>,
+    pub total_runtime_minutes: u64,
+    pub top_genres: Vec<(String, usize)>,
+    pub top_directors: Vec<(String, usize)>,
+}
+
 /// Связь в том виде, в котором её видно со страницы конкретного фильма.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelatedFilm {
@@ -221,6 +281,10 @@ pub struct Film {
     pub seasons_total: u16,
     /// Отсортированные уникальные номера просмотренных сезонов (1..=seasons_total).
     pub watched_seasons: Vec<u16>,
+    /// Цитаты и любимые моменты. Поле добавлено в миграции 006,
+    /// старые архивы без него читаются с пустым списком.
+    #[serde(default)]
+    pub quotes: Vec<String>,
 }
 
 impl Film {
@@ -252,6 +316,44 @@ impl Film {
 
     pub fn runtime_label(&self) -> Option<String> {
         self.runtime_minutes.map(|minutes| format!("{minutes} мин"))
+    }
+}
+
+/// Подробная информация о сезоне сериала (подготовка почвы для v1.2.0).
+#[allow(dead_code)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SeasonDetails {
+    pub season_number: u16,
+    pub title: Option<String>,
+    pub episodes_total: u16,
+    pub episodes_watched: u16,
+    pub air_year: Option<u16>,
+    pub overview: Option<String>,
+}
+
+#[allow(dead_code)]
+impl SeasonDetails {
+    pub fn new(season_number: u16, episodes_total: u16) -> Self {
+        Self {
+            season_number,
+            title: None,
+            episodes_total,
+            episodes_watched: 0,
+            air_year: None,
+            overview: None,
+        }
+    }
+
+    pub fn is_completed(&self) -> bool {
+        self.episodes_total > 0 && self.episodes_watched >= self.episodes_total
+    }
+
+    pub fn progress_percent(&self) -> u32 {
+        if self.episodes_total == 0 {
+            0
+        } else {
+            ((self.episodes_watched as f64 / self.episodes_total as f64) * 100.0) as u32
+        }
     }
 }
 
@@ -301,6 +403,7 @@ pub struct NewFilm {
     pub poster_path: Option<String>,
     pub seasons_total: u16,
     pub watched_seasons: Vec<u16>,
+    pub quotes: Vec<String>,
 }
 
 impl Default for NewFilm {
@@ -323,6 +426,7 @@ impl Default for NewFilm {
             poster_path: None,
             seasons_total: 0,
             watched_seasons: Vec::new(),
+            quotes: Vec::new(),
         }
     }
 }
@@ -362,6 +466,17 @@ impl NewFilm {
     /// Строка для хранения в SQLite: `"1,2,5"`.
     pub fn watched_seasons_db(&self) -> String {
         season_list_to_db(&self.normalized_watched_seasons())
+    }
+
+    /// JSON-строка со списком цитат для хранения в SQLite.
+    pub fn quotes_db(&self) -> String {
+        let cleaned: Vec<&str> = self
+            .quotes
+            .iter()
+            .map(|q| q.trim())
+            .filter(|q| !q.is_empty())
+            .collect();
+        serde_json::to_string(&cleaned).unwrap_or_else(|_| "[]".to_owned())
     }
 
     /// Проверка данных до обращения к БД.
@@ -463,6 +578,28 @@ pub fn season_list_to_db(seasons: &[u16]) -> String {
         .map(u16::to_string)
         .collect::<Vec<_>>()
         .join(",")
+}
+
+/// Разбирает список цитат из JSON-массива строк или текстовых строк.
+pub fn parse_quotes(value: &str) -> Vec<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+    if let Ok(quotes) = serde_json::from_str::<Vec<String>>(trimmed) {
+        return quotes
+            .into_iter()
+            .map(|q| q.trim().to_owned())
+            .filter(|q| !q.is_empty())
+            .collect();
+    }
+    // Fallback для строк с разделителем переноса строки:
+    trimmed
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -643,5 +780,32 @@ mod tests {
             assert_eq!(FilmStatus::from_db_str(status.as_db_str()), Some(status));
         }
         assert_eq!(FilmStatus::from_db_str("unknown"), None);
+    }
+
+    #[test]
+    fn quotes_serialization_and_parsing() {
+        let quotes = vec!["Цитата 1".to_string(), "Цитата 2".to_string()];
+        let json = serde_json::to_string(&quotes).unwrap();
+        assert_eq!(parse_quotes(&json), quotes);
+        assert_eq!(
+            parse_quotes("Цитата A\nЦитата B"),
+            vec!["Цитата A", "Цитата B"]
+        );
+        assert!(parse_quotes("").is_empty());
+    }
+
+    #[test]
+    fn season_details_progress_and_completion() {
+        let mut season = SeasonDetails::new(1, 10);
+        assert_eq!(season.progress_percent(), 0);
+        assert!(!season.is_completed());
+
+        season.episodes_watched = 5;
+        assert_eq!(season.progress_percent(), 50);
+        assert!(!season.is_completed());
+
+        season.episodes_watched = 10;
+        assert_eq!(season.progress_percent(), 100);
+        assert!(season.is_completed());
     }
 }

@@ -46,6 +46,9 @@ pub enum AppError {
     #[error("{0}")]
     Transfer(String),
 
+    #[error("Ошибка CSV: {0}")]
+    Csv(#[from] csv::Error),
+
     #[error("Файл обложки не найден: {}", .0.display())]
     PosterNotFound(PathBuf),
 

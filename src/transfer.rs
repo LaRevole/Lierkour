@@ -18,7 +18,7 @@ use zip::write::SimpleFileOptions;
 
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
-use crate::models::{Film, FilmRelation, NewFilm};
+use crate::models::{Film, FilmRelation, FilmScreenshot, NewFilm};
 use crate::storage::{self, AppPaths};
 
 const BUNDLE_VERSION: u32 = 1;
@@ -30,6 +30,8 @@ struct LibraryBundle {
     version: u32,
     films: Vec<Film>,
     relations: Vec<FilmRelation>,
+    #[serde(default)]
+    screenshots: Vec<FilmScreenshot>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -69,11 +71,13 @@ impl ImportSummary {
 pub fn export_library(db: &Database, paths: &AppPaths, target: &Path) -> AppResult<ExportSummary> {
     let films = db.list_all_films()?;
     let relations = db.list_all_relations()?;
+    let screenshots = db.list_all_screenshots()?;
 
     let bundle = LibraryBundle {
         version: BUNDLE_VERSION,
         films: films.clone(),
         relations: relations.clone(),
+        screenshots: screenshots.clone(),
     };
 
     let file = fs::File::create(target)?;
@@ -112,6 +116,26 @@ pub fn export_library(db: &Database, paths: &AppPaths, target: &Path) -> AppResu
         let mut source = fs::File::open(&absolute)?;
         std::io::copy(&mut source, &mut zip)?;
         posters += 1;
+    }
+
+    let mut written_screenshots = HashSet::new();
+    for shot in &screenshots {
+        let absolute = paths.resolve_screenshot(&shot.image_path);
+        if !absolute.is_file() {
+            continue;
+        }
+        let Some(file_name) = absolute.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let entry_name = format!("screenshots/{file_name}");
+        if !written_screenshots.insert(entry_name.clone()) {
+            continue;
+        }
+
+        zip.start_file(entry_name, options)
+            .map_err(|error| AppError::Archive(error.to_string()))?;
+        let mut source = fs::File::open(&absolute)?;
+        std::io::copy(&mut source, &mut zip)?;
     }
 
     zip.finish()
@@ -242,6 +266,25 @@ pub fn import_library(
         }
     }
 
+    // Восстанавливаем кадры/скриншоты
+    for screenshot in &bundle.screenshots {
+        let Some(&new_film_id) = id_map.get(&screenshot.film_id) else {
+            continue;
+        };
+        match import_screenshot_from_zip(&mut zip, paths, &screenshot.image_path) {
+            Ok(Some(imported)) => {
+                let _ =
+                    db.add_screenshot(new_film_id, &imported.relative_path, &screenshot.caption);
+            }
+            Ok(None) => {}
+            Err(error) => {
+                summary
+                    .warnings
+                    .push(format!("Кадр не восстановлен: {error}"));
+            }
+        }
+    }
+
     // Новые фильмы дописываем после существующих, сохраняя порядок архива.
     if !imported_ids.is_empty() {
         let mut order = existing_ids;
@@ -271,6 +314,7 @@ fn draft_from_export(film: &Film, poster_path: Option<String>) -> NewFilm {
         poster_path,
         seasons_total: film.seasons_total,
         watched_seasons: film.watched_seasons.clone(),
+        quotes: film.quotes.clone(),
     }
 }
 
@@ -315,6 +359,188 @@ fn import_poster_from_zip(
     let image = image::load_from_memory(&bytes)?.to_rgba8();
     storage::validate_image_size(image.width(), image.height())?;
     Ok(Some(storage::import_poster_image(&image, paths)?))
+}
+
+fn import_screenshot_from_zip(
+    zip: &mut ZipArchive<fs::File>,
+    paths: &AppPaths,
+    stored_path: &str,
+) -> AppResult<Option<storage::ImportedPoster>> {
+    let Some(file_name) = storage::poster_file_name(stored_path) else {
+        return Ok(None);
+    };
+    let entry_name = format!("screenshots/{file_name}");
+
+    let mut bytes = Vec::new();
+    match zip.by_name(&entry_name) {
+        Ok(mut entry) => {
+            entry.read_to_end(&mut bytes)?;
+        }
+        Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+        Err(error) => return Err(AppError::Archive(error.to_string())),
+    }
+
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+
+    let image = image::load_from_memory(&bytes)?.to_rgba8();
+    storage::validate_image_size(image.width(), image.height())?;
+    Ok(Some(storage::import_screenshot_image(&image, paths)?))
+}
+
+/// Экспорт фильмографии в файл CSV (с BOM для корректного открытия в Excel).
+pub fn export_to_csv(films: &[Film], target: &Path) -> AppResult<()> {
+    let mut file = fs::File::create(target)?;
+    // UTF-8 BOM, чтобы Excel корректно понимал кириллицу
+    file.write_all(b"\xEF\xBB\xBF")?;
+
+    let mut writer = csv::WriterBuilder::new()
+        .has_headers(true)
+        .from_writer(file);
+
+    writer.write_record([
+        "ID",
+        "Название",
+        "Оригинальное название",
+        "Категория",
+        "Год",
+        "Режиссёр",
+        "Жанры",
+        "Страна",
+        "Длительность (мин)",
+        "Оценка",
+        "Статус",
+        "Теги",
+        "IMDb ID",
+        "Сезоны (всего)",
+        "Просмотрено сезонов",
+        "Цитаты",
+        "Описание",
+        "Мысли",
+    ])?;
+
+    for film in films {
+        let seasons_str = film
+            .watched_seasons
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+
+        writer.write_record(&[
+            film.id.to_string(),
+            film.title.clone(),
+            film.original_title.clone(),
+            film.category.clone(),
+            film.year.map(|y| y.to_string()).unwrap_or_default(),
+            film.director.clone(),
+            film.genres.clone(),
+            film.country.clone(),
+            film.runtime_minutes
+                .map(|m| m.to_string())
+                .unwrap_or_default(),
+            film.rating.map(|r| r.to_string()).unwrap_or_default(),
+            film.status.label().to_owned(),
+            film.tags.clone(),
+            film.imdb_id.clone(),
+            film.seasons_total.to_string(),
+            seasons_str,
+            film.quotes.join(" | "),
+            film.description.clone(),
+            film.thoughts.clone(),
+        ])?;
+    }
+
+    writer.flush()?;
+    Ok(())
+}
+
+/// Экспорт фильмографии в красивый Markdown-файл.
+pub fn export_to_markdown(films: &[Film], target: &Path) -> AppResult<()> {
+    use std::fmt::Write as _;
+
+    let mut content = String::new();
+    let _ = writeln!(content, "# Моя фильмотека\n");
+    let _ = writeln!(
+        content,
+        "*Экспортировано записей: {}*\n\n---\n",
+        films.len()
+    );
+
+    for film in films {
+        let year_str = film.year.map(|y| format!(" ({y})")).unwrap_or_default();
+        let _ = writeln!(content, "## {}{}\n", film.title, year_str);
+
+        if !film.original_title.is_empty() {
+            let _ = writeln!(
+                content,
+                "**Оригинальное название:** {}\n",
+                film.original_title
+            );
+        }
+
+        let rating_str = film
+            .rating
+            .map(|r| format!("{r}/10"))
+            .unwrap_or_else(|| "без оценки".to_owned());
+
+        let _ = writeln!(
+            content,
+            "**Категория:** {} | **Статус:** {} | **Оценка:** {}\n",
+            film.category,
+            film.status.label(),
+            rating_str
+        );
+
+        if !film.director.is_empty() {
+            let _ = writeln!(content, "**Режиссёр:** {}\n", film.director);
+        }
+        if !film.genres.is_empty() {
+            let _ = writeln!(content, "**Жанры:** {}\n", film.genres);
+        }
+        if !film.country.is_empty() {
+            let _ = writeln!(content, "**Страна:** {}\n", film.country);
+        }
+        if let Some(runtime) = film.runtime_minutes {
+            let _ = writeln!(content, "**Длительность:** {runtime} мин.\n");
+        }
+        if !film.tags.is_empty() {
+            let _ = writeln!(content, "**Теги:** `{}`\n", film.tags);
+        }
+        if !film.imdb_id.is_empty() {
+            let _ = writeln!(
+                content,
+                "**IMDb:** [{0}](https://www.imdb.com/title/{0}/)\n",
+                film.imdb_id
+            );
+        }
+        if film.has_seasons() {
+            let _ = writeln!(
+                content,
+                "**Сезоны:** просмотрено {} из {}\n",
+                film.watched_season_count(),
+                film.seasons_total
+            );
+        }
+        if !film.description.is_empty() {
+            let _ = writeln!(content, "### Описание\n{}\n", film.description);
+        }
+        if !film.thoughts.is_empty() {
+            let _ = writeln!(content, "### Впечатления\n{}\n", film.thoughts);
+        }
+        if !film.quotes.is_empty() {
+            let _ = writeln!(content, "### Цитаты\n");
+            for quote in &film.quotes {
+                let _ = writeln!(content, "> {}\n", quote);
+            }
+        }
+
+        let _ = writeln!(content, "---\n");
+    }
+
+    fs::write(target, content)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -499,10 +725,58 @@ mod tests {
             poster_path: None,
             seasons_total: 0,
             watched_seasons: Vec::new(),
+            quotes: Vec::new(),
         };
 
         assert!(is_duplicate(&film, "дюна", Some(2021), ""));
         assert!(is_duplicate(&film, "другое", Some(1999), "tt1160419"));
         assert!(!is_duplicate(&film, "Дюна", Some(1984), ""));
+    }
+
+    #[test]
+    fn exports_to_csv_and_markdown() {
+        let dir = temp_dir("csv-md");
+        fs::create_dir_all(&dir).unwrap();
+        let csv_path = dir.join("test.csv");
+        let md_path = dir.join("test.md");
+
+        let film = Film {
+            id: 1,
+            title: "Матрица".to_owned(),
+            original_title: "The Matrix".to_owned(),
+            category: "Фильмы".to_owned(),
+            director: "Лана Вачовски, Лилли Вачовски".to_owned(),
+            year: Some(1999),
+            genres: "Фантастика, Боевик".to_owned(),
+            country: "США".to_owned(),
+            runtime_minutes: Some(136),
+            imdb_id: "tt0133093".to_owned(),
+            tags: "киберпанк, классика".to_owned(),
+            status: FilmStatus::Watched,
+            rating: Some(10),
+            description: "Мир — это иллюзия.".to_owned(),
+            thoughts: "Шедевр.".to_owned(),
+            poster_path: None,
+            seasons_total: 0,
+            watched_seasons: Vec::new(),
+            quotes: vec!["Ложки нет.".to_owned()],
+        };
+
+        export_to_csv(std::slice::from_ref(&film), &csv_path).unwrap();
+        assert!(csv_path.exists());
+        let csv_content = fs::read(&csv_path).unwrap();
+        assert!(csv_content.starts_with(b"\xEF\xBB\xBF")); // BOM check
+        let csv_str = String::from_utf8_lossy(&csv_content);
+        assert!(csv_str.contains("Матрица"));
+        assert!(csv_str.contains("Ложки нет."));
+
+        export_to_markdown(&[film], &md_path).unwrap();
+        assert!(md_path.exists());
+        let md_str = fs::read_to_string(&md_path).unwrap();
+        assert!(md_str.contains("# Моя фильмотека"));
+        assert!(md_str.contains("## Матрица (1999)"));
+        assert!(md_str.contains("> Ложки нет."));
+
+        let _ = fs::remove_dir_all(&dir);
     }
 }

@@ -1,5 +1,6 @@
 //! Состояние приложения и связка UI ↔ база данных.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
@@ -9,10 +10,13 @@ use eframe::egui::{self, Color32, RichText};
 use crate::db::Database;
 use crate::error::AppError;
 use crate::metadata::{self, MovieMetadata};
-use crate::models::{DEFAULT_CATEGORIES, Film, FilmFilter, RelatedFilm, RelationKind};
+use crate::models::{
+    AppTheme, DEFAULT_CATEGORIES, DashboardStats, Film, FilmFilter, RelatedFilm, RelationKind,
+};
 use crate::nav;
 use crate::storage::{self, AppPaths};
 use crate::transfer;
+use crate::ui::dashboard::{self, DashboardAction};
 use crate::ui::editor::{self, EditorAction, EditorState, PendingPoster};
 use crate::ui::library::{self, LibraryAction, LibraryState};
 use crate::ui::poster_cache::{self, PosterCache};
@@ -22,6 +26,7 @@ pub struct FilmApp {
     paths: AppPaths,
     db: Option<Database>,
     startup_error: Option<String>,
+    theme: AppTheme,
 
     films: Vec<Film>,
     categories: Vec<String>,
@@ -48,6 +53,7 @@ pub struct FilmApp {
 enum Screen {
     Library,
     Editor(Box<EditorState>),
+    Dashboard(DashboardStats),
 }
 
 enum AppAction {
@@ -69,8 +75,15 @@ enum AppAction {
     RemoveRelation(i64),
     OpenRelated(i64),
     Export,
+    ExportCsv,
+    ExportMarkdown,
     Import,
     OpenSettings,
+    Dashboard,
+    ToggleTheme,
+    AddScreenshotFile(PathBuf),
+    AddScreenshotClipboard(Arc<image::RgbaImage>),
+    DeleteScreenshot(i64),
 }
 
 struct MetadataJob {
@@ -87,14 +100,20 @@ struct Toast {
     until: Instant,
 }
 
+type EditorFilmData = (
+    Film,
+    Vec<RelatedFilm>,
+    Vec<Film>,
+    Vec<crate::models::FilmScreenshot>,
+);
+
 impl FilmApp {
     pub fn new(cc: &eframe::CreationContext<'_>, paths: AppPaths) -> Self {
-        theme::apply(&cc.egui_ctx);
-
         let mut app = Self {
             paths,
             db: None,
             startup_error: None,
+            theme: AppTheme::Dark,
             films: Vec::new(),
             categories: DEFAULT_CATEGORIES
                 .iter()
@@ -118,11 +137,15 @@ impl FilmApp {
 
         match Database::open(&app.paths.db_path) {
             Ok(db) => {
+                let current_theme = db.get_theme().unwrap_or_default();
+                app.theme = current_theme;
+                theme::apply(&cc.egui_ctx, current_theme);
                 app.db = Some(db);
                 app.reload_films();
                 app.reload_categories();
             }
             Err(error) => {
+                theme::apply(&cc.egui_ctx, AppTheme::Dark);
                 app.startup_error = Some(error.to_string());
             }
         }
@@ -288,20 +311,22 @@ impl FilmApp {
 
     fn open_editor(&mut self, id: i64) {
         let result = match self.db.as_ref() {
-            Some(db) => (|| -> Result<(Film, Vec<RelatedFilm>, Vec<Film>), AppError> {
+            Some(db) => (|| -> Result<EditorFilmData, AppError> {
                 let film = db.get_film(id)?;
                 let relations = db.relations_for(id)?;
                 let all_films = db.list_all_films()?;
-                Ok((film, relations, all_films))
+                let screenshots = db.list_screenshots(id)?;
+                Ok((film, relations, all_films, screenshots))
             })(),
             None => Err(AppError::DatabaseUnavailable),
         };
 
         match result {
-            Ok((film, relations, all_films)) => {
+            Ok((film, relations, all_films, screenshots)) => {
                 let mut editor = EditorState::from_film(&film);
                 editor.relations = relations;
                 editor.relation_candidates = relation_candidates(&all_films, film.id);
+                editor.screenshots = screenshots;
                 editor.scroll_salt = self.alloc_scroll_salt();
                 self.open_screen(Screen::Editor(Box::new(editor)));
             }
@@ -311,10 +336,26 @@ impl FilmApp {
         }
     }
 
+    fn refresh_editor_screenshots(&mut self) {
+        let Some(film_id) = (match &self.screen {
+            Screen::Editor(editor) => editor.film_id,
+            _ => None,
+        }) else {
+            return;
+        };
+
+        if let Some(db) = self.db.as_ref()
+            && let Ok(shots) = db.list_screenshots(film_id)
+            && let Screen::Editor(editor) = &mut self.screen
+        {
+            editor.screenshots = shots;
+        }
+    }
+
     fn refresh_editor_relations(&mut self) {
         let Some(film_id) = (match &self.screen {
             Screen::Editor(editor) => editor.film_id,
-            Screen::Library => None,
+            Screen::Library | Screen::Dashboard(_) => None,
         }) else {
             return;
         };
@@ -409,7 +450,7 @@ impl FilmApp {
                 };
                 (query, editor.year, editor.film_id)
             }
-            Screen::Library => return,
+            Screen::Library | Screen::Dashboard(_) => return,
         };
 
         if query.is_empty() {
@@ -443,7 +484,7 @@ impl FilmApp {
                     Screen::Editor(editor) => {
                         editor.film_id == job.film_id && editor_query(editor) == job.query
                     }
-                    Screen::Library => false,
+                    Screen::Library | Screen::Dashboard(_) => false,
                 };
 
                 if still_same_card {
@@ -668,6 +709,161 @@ impl FilmApp {
         }
     }
 
+    fn export_csv(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Экспорт в CSV")
+            .set_file_name("filmography.csv")
+            .add_filter("CSV таблица", &["csv"])
+            .save_file()
+        else {
+            return;
+        };
+
+        match transfer::export_to_csv(&self.films, &path) {
+            Ok(()) => self.notify(
+                format!("Успешно экспортировано {} фильмов в CSV", self.films.len()),
+                false,
+            ),
+            Err(error) => self.notify(format!("Ошибка экспорта в CSV: {error}"), true),
+        }
+    }
+
+    fn export_markdown(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .set_title("Экспорт в Markdown")
+            .set_file_name("filmography.md")
+            .add_filter("Markdown документ", &["md"])
+            .save_file()
+        else {
+            return;
+        };
+
+        match transfer::export_to_markdown(&self.films, &path) {
+            Ok(()) => self.notify(
+                format!(
+                    "Успешно экспортировано {} фильмов в Markdown",
+                    self.films.len()
+                ),
+                false,
+            ),
+            Err(error) => self.notify(format!("Ошибка экспорта в Markdown: {error}"), true),
+        }
+    }
+
+    fn toggle_theme(&mut self, ctx: &egui::Context) {
+        self.theme = match self.theme {
+            AppTheme::Dark => AppTheme::Light,
+            AppTheme::Light => AppTheme::Dark,
+        };
+        if let Some(db) = self.db.as_mut() {
+            let _ = db.set_theme(self.theme);
+        }
+        theme::apply(ctx, self.theme);
+        self.notify(
+            format!(
+                "Тема переключена: {}",
+                match self.theme {
+                    AppTheme::Dark => "тёмная",
+                    AppTheme::Light => "светлая",
+                }
+            ),
+            false,
+        );
+    }
+
+    fn open_dashboard(&mut self) {
+        let stats = match self.db.as_ref() {
+            Some(db) => match db.get_dashboard_stats() {
+                Ok(stats) => stats,
+                Err(err) => {
+                    self.notify(format!("Не удалось получить статистику: {err}"), true);
+                    return;
+                }
+            },
+            None => {
+                self.notify("База данных недоступна", true);
+                return;
+            }
+        };
+        self.open_screen(Screen::Dashboard(stats));
+    }
+
+    fn add_screenshot_file(&mut self, file: PathBuf) {
+        let Screen::Editor(editor) = &mut self.screen else {
+            return;
+        };
+        let Some(film_id) = editor.film_id else {
+            self.notify("Сначала сохраните фильм", true);
+            return;
+        };
+
+        match storage::import_screenshot(&file, &self.paths) {
+            Ok(imported) => {
+                if let Some(db) = self.db.as_mut() {
+                    match db.add_screenshot(film_id, &imported.relative_path, "") {
+                        Ok(_) => {
+                            self.refresh_editor_screenshots();
+                            self.notify("Кадр добавлен", false);
+                        }
+                        Err(e) => {
+                            let _ = storage::delete_screenshot_file(
+                                &self.paths,
+                                &imported.relative_path,
+                            );
+                            self.notify(format!("Не удалось сохранить кадр в БД: {e}"), true);
+                        }
+                    }
+                }
+            }
+            Err(e) => self.notify(format!("Не удалось импортировать кадр: {e}"), true),
+        }
+    }
+
+    fn add_screenshot_clipboard(&mut self, image: Arc<image::RgbaImage>) {
+        let Screen::Editor(editor) = &mut self.screen else {
+            return;
+        };
+        let Some(film_id) = editor.film_id else {
+            self.notify("Сначала сохраните фильм", true);
+            return;
+        };
+
+        match storage::import_screenshot_image(&image, &self.paths) {
+            Ok(imported) => {
+                if let Some(db) = self.db.as_mut() {
+                    match db.add_screenshot(film_id, &imported.relative_path, "") {
+                        Ok(_) => {
+                            self.refresh_editor_screenshots();
+                            self.notify("Кадр из буфера добавлен", false);
+                        }
+                        Err(e) => {
+                            let _ = storage::delete_screenshot_file(
+                                &self.paths,
+                                &imported.relative_path,
+                            );
+                            self.notify(format!("Не удалось сохранить кадр в БД: {e}"), true);
+                        }
+                    }
+                }
+            }
+            Err(e) => self.notify(format!("Не удалось сохранить кадр: {e}"), true),
+        }
+    }
+
+    fn delete_screenshot(&mut self, id: i64) {
+        if let Some(db) = self.db.as_mut() {
+            match db.delete_screenshot(id) {
+                Ok(Some(path)) => {
+                    let _ = storage::delete_screenshot_file(&self.paths, &path);
+                    self.refresh_editor_screenshots();
+                    self.notify("Кадр удалён", false);
+                }
+                Ok(None) => {}
+                Err(e) => self.notify(format!("Не удалось удалить кадр: {e}"), true),
+            }
+        }
+    }
+
     fn take_editor(&mut self) -> Option<Box<EditorState>> {
         match std::mem::replace(&mut self.screen, Screen::Library) {
             Screen::Editor(editor) => Some(editor),
@@ -858,27 +1054,28 @@ impl FilmApp {
             return;
         };
 
+        let colors = theme::colors(&ctx);
         ctx.request_repaint_after(toast.until.saturating_duration_since(now));
 
         let color = if toast.is_error {
-            theme::DANGER
+            colors.danger
         } else {
-            theme::SUCCESS
+            colors.success
         };
         let mut dismiss = false;
 
         egui::Panel::bottom("toast_bar")
             .frame(
                 egui::Frame::new()
-                    .fill(theme::SURFACE)
-                    .stroke(egui::Stroke::new(1.0, theme::BORDER))
+                    .fill(colors.surface)
+                    .stroke(egui::Stroke::new(1.0, colors.border))
                     .inner_margin(egui::Margin::symmetric(16, 8)),
             )
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.colored_label(color, &toast.message);
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("×").clicked() {
+                        if ui.small_button("x").clicked() {
                             dismiss = true;
                         }
                     });
@@ -895,6 +1092,7 @@ impl FilmApp {
             return;
         };
 
+        let colors = theme::colors(ctx);
         let mut confirm = false;
         let mut cancel = false;
 
@@ -902,11 +1100,15 @@ impl FilmApp {
             ui.set_width(380.0);
             ui.heading("Удалить фильм?");
             ui.add_space(4.0);
-            ui.label(RichText::new(format!("Удалить «{}»?", film.title)).strong());
+            ui.label(
+                RichText::new(format!("Удалить «{}»?", film.title))
+                    .strong()
+                    .color(colors.text),
+            );
             ui.label(
                 RichText::new("Запись и файл обложки будут удалены безвозвратно.")
                     .small()
-                    .color(theme::TEXT_MUTED),
+                    .color(colors.text_muted),
             );
             ui.add_space(10.0);
 
@@ -914,7 +1116,7 @@ impl FilmApp {
                 if ui
                     .add(
                         egui::Button::new(RichText::new("Удалить").color(Color32::WHITE))
-                            .fill(theme::DANGER),
+                            .fill(colors.danger),
                     )
                     .clicked()
                 {
@@ -938,6 +1140,7 @@ impl FilmApp {
             return;
         }
 
+        let colors = theme::colors(ctx);
         let mut save = false;
         let mut cancel = false;
 
@@ -951,11 +1154,11 @@ impl FilmApp {
                      автозаполнения данных из OMDb.",
                 )
                 .small()
-                .color(theme::TEXT_MUTED),
+                .color(colors.text_muted),
             );
             ui.add_space(10.0);
 
-            ui.label(RichText::new("Ключ OMDb API").strong());
+            ui.label(RichText::new("Ключ OMDb API").strong().color(colors.text));
             ui.add(
                 egui::TextEdit::singleline(&mut self.settings_key)
                     .hint_text("Вставьте бесплатный ключ")
@@ -972,19 +1175,22 @@ impl FilmApp {
                      Пустое поле отключает автозаполнение.",
                 )
                 .small()
-                .color(theme::TEXT_MUTED),
+                .color(colors.text_muted),
             );
 
             ui.add_space(14.0);
             ui.horizontal(|ui| {
+                let btn_text_color = if colors.is_dark {
+                    Color32::from_rgb(20, 20, 20)
+                } else {
+                    Color32::WHITE
+                };
                 if ui
                     .add(
                         egui::Button::new(
-                            RichText::new("Сохранить")
-                                .strong()
-                                .color(Color32::from_rgb(22, 20, 15)),
+                            RichText::new("Сохранить").strong().color(btn_text_color),
                         )
-                        .fill(theme::ACCENT),
+                        .fill(colors.accent),
                     )
                     .clicked()
                 {
@@ -1004,24 +1210,25 @@ impl FilmApp {
     }
 
     fn show_startup_error(&mut self, ui: &mut egui::Ui) {
+        let colors = theme::colors(ui.ctx());
         let error = self.startup_error.clone().unwrap_or_default();
         let db_path = self.paths.db_path.display().to_string();
         let mut retry = false;
         let mut quit = false;
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::new().fill(theme::BG))
+            .frame(egui::Frame::new().fill(colors.bg))
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
                     ui.add_space(120.0);
                     ui.heading("Не удалось открыть библиотеку");
                     ui.add_space(8.0);
-                    ui.colored_label(theme::DANGER, &error);
+                    ui.colored_label(colors.danger, &error);
                     ui.add_space(8.0);
                     ui.label(
                         RichText::new(format!("Файл базы данных: {db_path}"))
                             .small()
-                            .color(theme::TEXT_MUTED),
+                            .color(colors.text_muted),
                     );
                     ui.add_space(16.0);
 
@@ -1056,10 +1263,29 @@ impl eframe::App for FilmApp {
 
         self.poll_navigation(&ctx);
 
-        if matches!(self.screen, Screen::Library)
-            && ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::N))
-        {
+        // Горячие клавиши (Пункт 17)
+        if ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::N)) {
             self.open_new_editor();
+        }
+        if ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::F)) {
+            self.library_state.focus_search = true;
+            if !matches!(self.screen, Screen::Library) {
+                self.return_to_library();
+            }
+        }
+        if ctx.input(|input| input.key_pressed(egui::Key::Escape)) {
+            if self.settings_open {
+                self.settings_open = false;
+            } else if self.confirm_delete.is_some() {
+                self.confirm_delete = None;
+            } else if !matches!(self.screen, Screen::Library) {
+                self.return_to_library();
+            }
+        }
+        if matches!(self.screen, Screen::Editor(_))
+            && ctx.input(|input| input.modifiers.command && input.key_pressed(egui::Key::S))
+        {
+            self.save_editor();
         }
 
         self.show_toast(ui);
@@ -1088,8 +1314,12 @@ impl eframe::App for FilmApp {
                         AppAction::MoveFilm { film_id, target_id }
                     }
                     LibraryAction::Export => AppAction::Export,
+                    LibraryAction::ExportCsv => AppAction::ExportCsv,
+                    LibraryAction::ExportMarkdown => AppAction::ExportMarkdown,
                     LibraryAction::Import => AppAction::Import,
                     LibraryAction::Settings => AppAction::OpenSettings,
+                    LibraryAction::Dashboard => AppAction::Dashboard,
+                    LibraryAction::ToggleTheme => AppAction::ToggleTheme,
                 })
             }
             Screen::Editor(editor) => {
@@ -1117,9 +1347,19 @@ impl eframe::App for FilmApp {
                     }),
                     EditorAction::RemoveRelation(id) => Some(AppAction::RemoveRelation(id)),
                     EditorAction::OpenRelated(id) => Some(AppAction::OpenRelated(id)),
+                    EditorAction::AddScreenshotFile(path) => {
+                        Some(AppAction::AddScreenshotFile(path))
+                    }
+                    EditorAction::AddScreenshotClipboard(image) => {
+                        Some(AppAction::AddScreenshotClipboard(image))
+                    }
+                    EditorAction::DeleteScreenshot(id) => Some(AppAction::DeleteScreenshot(id)),
                     EditorAction::None => None,
                 }
             }
+            Screen::Dashboard(stats) => dashboard::show(ui, stats).map(|action| match action {
+                DashboardAction::Back => AppAction::CancelEditor,
+            }),
         };
 
         if filter_changed {
@@ -1145,8 +1385,15 @@ impl eframe::App for FilmApp {
                 AppAction::RemoveRelation(id) => self.remove_relation(id),
                 AppAction::OpenRelated(id) => self.open_editor(id),
                 AppAction::Export => self.export_library(),
+                AppAction::ExportCsv => self.export_csv(),
+                AppAction::ExportMarkdown => self.export_markdown(),
                 AppAction::Import => self.import_library(),
                 AppAction::OpenSettings => self.open_settings(),
+                AppAction::Dashboard => self.open_dashboard(),
+                AppAction::ToggleTheme => self.toggle_theme(&ctx),
+                AppAction::AddScreenshotFile(path) => self.add_screenshot_file(path),
+                AppAction::AddScreenshotClipboard(image) => self.add_screenshot_clipboard(image),
+                AppAction::DeleteScreenshot(id) => self.delete_screenshot(id),
             }
         }
 

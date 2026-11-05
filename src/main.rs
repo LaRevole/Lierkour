@@ -37,7 +37,7 @@ fn main() -> anyhow::Result<()> {
             .with_title("Моя Фильмография")
             .with_app_id("my-film-library")
             .with_inner_size([1200.0, 800.0])
-            .with_min_inner_size([860.0, 560.0]),
+            .with_min_inner_size([680.0, 480.0]),
         ..Default::default()
     };
 

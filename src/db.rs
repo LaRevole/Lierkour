@@ -13,8 +13,9 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 
 use crate::error::{AppError, AppResult};
 use crate::models::{
-    DEFAULT_CATEGORIES, Film, FilmFilter, FilmRelation, FilmStatus, NewFilm, RelatedFilm,
-    RelationKind, parse_watched_seasons,
+    AppTheme, DEFAULT_CATEGORIES, DashboardStats, Film, FilmFilter, FilmRelation, FilmScreenshot,
+    FilmStatus, NewFilm, RelatedFilm, RelationKind, parse_quotes, parse_watched_seasons,
+    split_comma_list,
 };
 
 /// Список миграций: (версия, SQL). Применяются по порядку в транзакции.
@@ -30,6 +31,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/004_metadata_relations_export.sql"),
     ),
     (5, include_str!("../migrations/005_tags.sql")),
+    (
+        6,
+        include_str!("../migrations/006_screenshots_and_quotes.sql"),
+    ),
 ];
 
 pub struct Database {
@@ -101,7 +106,7 @@ impl Database {
         let mut statement = self.conn.prepare(
             "SELECT id, title, original_title, category, director, year, genres, country,
                     runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
-                    poster_path, seasons_total, watched_seasons
+                    poster_path, seasons_total, watched_seasons, quotes
              FROM films
              WHERE (?1 IS NULL OR status = ?1)
                AND (?2 IS NULL OR category = ?2)
@@ -147,7 +152,7 @@ impl Database {
             .query_row(
                 "SELECT id, title, original_title, category, director, year, genres, country,
                         runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
-                        poster_path, seasons_total, watched_seasons
+                        poster_path, seasons_total, watched_seasons, quotes
                  FROM films WHERE id = ?1",
                 [id],
                 film_from_row,
@@ -191,10 +196,10 @@ impl Database {
             "INSERT INTO films (
                  title, original_title, category, director, year, genres, country,
                  runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
-                 poster_path, seasons_total, watched_seasons, sort_order
+                 poster_path, seasons_total, watched_seasons, quotes, sort_order
              )
              VALUES (
-                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17,
+                 ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18,
                  (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM films)
              )",
             params![
@@ -215,6 +220,7 @@ impl Database {
                 draft.poster_path,
                 draft.seasons_total,
                 draft.watched_seasons_db(),
+                draft.quotes_db(),
             ],
         )?;
 
@@ -243,6 +249,7 @@ impl Database {
                  poster_path = ?16,
                  seasons_total = ?17,
                  watched_seasons = ?18,
+                 quotes = ?19,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1",
             params![
@@ -264,6 +271,7 @@ impl Database {
                 draft.poster_path,
                 draft.seasons_total,
                 draft.watched_seasons_db(),
+                draft.quotes_db(),
             ],
         )?;
 
@@ -378,7 +386,7 @@ impl Database {
                     f.id, f.title, f.original_title, f.category, f.director, f.year,
                     f.genres, f.country, f.runtime_minutes, f.imdb_id, f.tags, f.status, f.rating,
                     f.description, f.thoughts, f.poster_path, f.seasons_total,
-                    f.watched_seasons
+                    f.watched_seasons, f.quotes
              FROM film_relations r
              JOIN films f
                ON f.id = CASE WHEN r.source_id = ?1 THEN r.target_id ELSE r.source_id END
@@ -449,11 +457,196 @@ impl Database {
 
         Ok(poster_path)
     }
+
+    // --- Скриншоты и кадры ---
+
+    pub fn list_screenshots(&self, film_id: i64) -> AppResult<Vec<FilmScreenshot>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, film_id, image_path, caption, position
+             FROM film_screenshots
+             WHERE film_id = ?1
+             ORDER BY position ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([film_id], |row| {
+            Ok(FilmScreenshot {
+                id: row.get(0)?,
+                film_id: row.get(1)?,
+                image_path: row.get(2)?,
+                caption: row.get(3)?,
+                position: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn list_all_screenshots(&self) -> AppResult<Vec<FilmScreenshot>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, film_id, image_path, caption, position
+             FROM film_screenshots
+             ORDER BY film_id ASC, position ASC, id ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(FilmScreenshot {
+                id: row.get(0)?,
+                film_id: row.get(1)?,
+                image_path: row.get(2)?,
+                caption: row.get(3)?,
+                position: row.get(4)?,
+            })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    }
+
+    pub fn add_screenshot(
+        &mut self,
+        film_id: i64,
+        image_path: &str,
+        caption: &str,
+    ) -> AppResult<i64> {
+        let next_pos: i64 = self.conn.query_row(
+            "SELECT COALESCE(MAX(position), -1) + 1 FROM film_screenshots WHERE film_id = ?1",
+            [film_id],
+            |r| r.get(0),
+        )?;
+
+        self.conn.execute(
+            "INSERT INTO film_screenshots (film_id, image_path, caption, position)
+             VALUES (?1, ?2, ?3, ?4)",
+            params![film_id, image_path.trim(), caption.trim(), next_pos],
+        )?;
+
+        Ok(self.conn.last_insert_rowid())
+    }
+
+    pub fn delete_screenshot(&mut self, id: i64) -> AppResult<Option<String>> {
+        let path: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT image_path FROM film_screenshots WHERE id = ?1",
+                [id],
+                |r| r.get(0),
+            )
+            .optional()?;
+
+        if path.is_some() {
+            self.conn
+                .execute("DELETE FROM film_screenshots WHERE id = ?1", [id])?;
+        }
+
+        Ok(path)
+    }
+
+    // --- Настройки и Тема ---
+
+    pub fn get_theme(&self) -> AppResult<AppTheme> {
+        match self.get_setting("theme")? {
+            Some(value) => Ok(AppTheme::from_str_opt(&value).unwrap_or_default()),
+            None => Ok(AppTheme::default()),
+        }
+    }
+
+    pub fn set_theme(&mut self, theme: AppTheme) -> AppResult<()> {
+        self.set_setting("theme", theme.as_str())
+    }
+
+    // --- Статистика библиотеки (Dashboard) ---
+
+    pub fn get_dashboard_stats(&self) -> AppResult<DashboardStats> {
+        let total_films: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM films", [], |r| r.get(0))?;
+
+        let watched_films: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM films WHERE status = 'watched'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let want_to_watch: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM films WHERE status = 'want_to_watch'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let watching: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM films WHERE status = 'watching'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let dropped: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM films WHERE status = 'dropped'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let average_rating: Option<f64> = self
+            .conn
+            .query_row(
+                "SELECT AVG(rating) FROM films WHERE rating IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?
+            .flatten();
+
+        let total_runtime_minutes: i64 = self
+            .conn
+            .query_row(
+                "SELECT COALESCE(SUM(runtime_minutes), 0) FROM films WHERE status = 'watched' AND runtime_minutes IS NOT NULL",
+                [],
+                |r| r.get(0),
+            )?;
+
+        // Топ жанров
+        let mut genre_counts = std::collections::HashMap::<String, usize>::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT genres FROM films WHERE genres != ''")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for g_str in rows.flatten() {
+            for genre in split_comma_list(&g_str) {
+                *genre_counts.entry(genre.to_owned()).or_insert(0) += 1;
+            }
+        }
+        let mut top_genres: Vec<(String, usize)> = genre_counts.into_iter().collect();
+        top_genres.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        top_genres.truncate(5);
+
+        // Топ режиссёров
+        let mut director_counts = std::collections::HashMap::<String, usize>::new();
+        let mut stmt = self
+            .conn
+            .prepare("SELECT director FROM films WHERE director != ''")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        for d in rows.flatten() {
+            let trimmed = d.trim();
+            if !trimmed.is_empty() {
+                *director_counts.entry(trimmed.to_owned()).or_insert(0) += 1;
+            }
+        }
+        let mut top_directors: Vec<(String, usize)> = director_counts.into_iter().collect();
+        top_directors.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        top_directors.truncate(5);
+
+        Ok(DashboardStats {
+            total_films: total_films.max(0) as usize,
+            watched_films: watched_films.max(0) as usize,
+            want_to_watch: want_to_watch.max(0) as usize,
+            watching: watching.max(0) as usize,
+            dropped: dropped.max(0) as usize,
+            average_rating,
+            total_runtime_minutes: total_runtime_minutes.max(0) as u64,
+            top_genres,
+            top_directors,
+        })
+    }
 }
 
 fn film_from_row(row: &Row<'_>) -> rusqlite::Result<Film> {
     let seasons_total: u16 = row.get("seasons_total")?;
     let watched_seasons: String = row.get("watched_seasons")?;
+    let quotes_str: String = row.get::<_, Option<String>>("quotes")?.unwrap_or_default();
 
     Ok(Film {
         id: row.get("id")?,
@@ -474,6 +667,7 @@ fn film_from_row(row: &Row<'_>) -> rusqlite::Result<Film> {
         poster_path: row.get("poster_path")?,
         seasons_total,
         watched_seasons: parse_watched_seasons(&watched_seasons, seasons_total),
+        quotes: parse_quotes(&quotes_str),
     })
 }
 
@@ -890,5 +1084,79 @@ mod tests {
         let _ = fs::remove_file(&path);
         let _ = fs::remove_file(path.with_extension("db-wal"));
         let _ = fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn quotes_and_screenshots_crud() {
+        let mut db = test_db();
+        let mut new_film = draft("Матрица", FilmStatus::Watched);
+        new_film.quotes = vec![
+            "Ложки нет.".to_owned(),
+            "Следуй за белым кроликом.".to_owned(),
+        ];
+        let film_id = db.insert_film(&new_film).unwrap();
+
+        let film = db.get_film(film_id).unwrap();
+        assert_eq!(film.quotes.len(), 2);
+        assert_eq!(film.quotes[0], "Ложки нет.");
+        assert_eq!(film.quotes[1], "Следуй за белым кроликом.");
+
+        // Скриншоты
+        let shot1 = db
+            .add_screenshot(film_id, "screenshots/shot1.png", "Нео уклоняется от пуль")
+            .unwrap();
+        let shot2 = db
+            .add_screenshot(film_id, "screenshots/shot2.png", "Красная таблетка")
+            .unwrap();
+
+        let shots = db.list_screenshots(film_id).unwrap();
+        assert_eq!(shots.len(), 2);
+        assert_eq!(shots[0].id, shot1);
+        assert_eq!(shots[0].caption, "Нео уклоняется от пуль");
+        assert_eq!(shots[1].id, shot2);
+
+        // Удаление скриншота
+        let deleted_path = db.delete_screenshot(shot1).unwrap();
+        assert_eq!(deleted_path, Some("screenshots/shot1.png".to_owned()));
+        assert_eq!(db.list_screenshots(film_id).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn dashboard_stats_and_theme() {
+        let mut db = test_db();
+
+        assert_eq!(db.get_theme().unwrap(), AppTheme::Dark);
+        db.set_theme(AppTheme::Light).unwrap();
+        assert_eq!(db.get_theme().unwrap(), AppTheme::Light);
+
+        let mut f1 = draft("Фильм 1", FilmStatus::Watched);
+        f1.director = "Кристофер Нолан".to_owned();
+        f1.genres = "Фантастика, Боевик".to_owned();
+        f1.rating = Some(9);
+        f1.runtime_minutes = Some(150);
+        db.insert_film(&f1).unwrap();
+
+        let mut f2 = draft("Фильм 2", FilmStatus::Watched);
+        f2.director = "Кристофер Нолан".to_owned();
+        f2.genres = "Фантастика, Драма".to_owned();
+        f2.rating = Some(7);
+        f2.runtime_minutes = Some(120);
+        db.insert_film(&f2).unwrap();
+
+        let mut f3 = draft("Фильм 3", FilmStatus::WantToWatch);
+        f3.director = "Дени Вильнёв".to_owned();
+        f3.genres = "Фантастика".to_owned();
+        db.insert_film(&f3).unwrap();
+
+        let stats = db.get_dashboard_stats().unwrap();
+        assert_eq!(stats.total_films, 3);
+        assert_eq!(stats.watched_films, 2);
+        assert_eq!(stats.want_to_watch, 1);
+        assert_eq!(stats.total_runtime_minutes, 270);
+        assert_eq!(stats.average_rating, Some(8.0));
+        assert_eq!(stats.top_genres[0].0, "Фантастика");
+        assert_eq!(stats.top_genres[0].1, 3);
+        assert_eq!(stats.top_directors[0].0, "Кристофер Нолан");
+        assert_eq!(stats.top_directors[0].1, 2);
     }
 }
