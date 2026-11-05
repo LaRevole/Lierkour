@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    myfilmlibrary_app::run();
+    lierkour_app::run();
 }

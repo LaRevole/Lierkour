@@ -71,14 +71,14 @@ jobs:
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: my-film-library-windows-x64
-          path: target/release/myfilmlibrary-app.exe
+          name: lierkour-windows-x64
+          path: target/release/lierkour-app.exe
           if-no-files-found: error
 
       - name: Upload Linux binary
         if: runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:
-          name: my-film-library-linux-x64
-          path: target/release/myfilmlibrary-app
+          name: lierkour-linux-x64
+          path: target/release/lierkour-app
           if-no-files-found: error

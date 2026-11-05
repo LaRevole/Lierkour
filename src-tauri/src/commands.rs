@@ -1,6 +1,6 @@
-use myfilmlibrary_core::metadata::MovieMetadata;
-use myfilmlibrary_core::transfer::{ExportSummary, ImportSummary};
-use myfilmlibrary_core::{
+use lierkour_core::metadata::MovieMetadata;
+use lierkour_core::transfer::{ExportSummary, ImportSummary};
+use lierkour_core::{
     AppPaths, AppTheme, DashboardStats, Database, Film, FilmFilter, FilmScreenshot, NewFilm,
     RelatedFilm, RelationKind,
 };
@@ -109,7 +109,7 @@ pub async fn delete_film(id: i64, state: State<'_, AppState>) -> Result<(), Stri
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
         let poster_to_delete = db_lock.delete_film(id).map_err(|e| e.to_string())?;
         if let Some(poster) = poster_to_delete {
-            let _ = myfilmlibrary_core::storage::delete_poster(&paths, &poster);
+            let _ = lierkour_core::storage::delete_poster(&paths, &poster);
         }
         Ok(())
     })
@@ -205,7 +205,7 @@ pub async fn import_poster_file(
     tokio::task::spawn_blocking(move || {
         let p = Path::new(&source_path);
         let imported =
-            myfilmlibrary_core::storage::import_poster(p, &paths).map_err(|e| e.to_string())?;
+            lierkour_core::storage::import_poster(p, &paths).map_err(|e| e.to_string())?;
         Ok(imported.relative_path)
     })
     .await
@@ -248,7 +248,7 @@ pub async fn import_poster_from_base64(
             .decode(clean_base64)
             .map_err(|e| format!("Base64 decode error: {e}"))?;
 
-        let imported = myfilmlibrary_core::storage::import_poster_bytes(&bytes, &paths)
+        let imported = lierkour_core::storage::import_poster_bytes(&bytes, &paths)
             .map_err(|e| e.to_string())?;
 
         Ok(imported.relative_path)
@@ -279,7 +279,7 @@ pub async fn fetch_omdb_metadata(
     };
 
     tokio::task::spawn_blocking(move || {
-        myfilmlibrary_core::metadata::fetch(&key, &title, year).map_err(|e| e.to_string())
+        lierkour_core::metadata::fetch(&key, &title, year).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("Execution error: {e}"))?
@@ -377,7 +377,7 @@ pub async fn add_film_screenshot(
     tokio::task::spawn_blocking(move || {
         let p = Path::new(&source_path);
         let imported =
-            myfilmlibrary_core::storage::import_screenshot(p, &paths).map_err(|e| e.to_string())?;
+            lierkour_core::storage::import_screenshot(p, &paths).map_err(|e| e.to_string())?;
 
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
         let shot_id = db_lock
@@ -410,7 +410,7 @@ pub async fn delete_film_screenshot(
             .map_err(|e| e.to_string())?;
 
         if let Some(path) = deleted_path {
-            let _ = myfilmlibrary_core::storage::delete_screenshot_file(&paths, &path);
+            let _ = lierkour_core::storage::delete_screenshot_file(&paths, &path);
         }
         Ok(())
     })
@@ -430,7 +430,7 @@ pub async fn export_backup_zip(
     tokio::task::spawn_blocking(move || {
         let db_lock = db.lock().map_err(|e| e.to_string())?;
         let p = Path::new(&target_path);
-        myfilmlibrary_core::transfer::export_library(&db_lock, &paths, p).map_err(|e| e.to_string())
+        lierkour_core::transfer::export_library(&db_lock, &paths, p).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("Execution error: {e}"))?
@@ -446,7 +446,7 @@ pub async fn import_backup_zip(
     tokio::task::spawn_blocking(move || {
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
         let p = Path::new(&source_path);
-        myfilmlibrary_core::transfer::import_library(&mut db_lock, &paths, p)
+        lierkour_core::transfer::import_library(&mut db_lock, &paths, p)
             .map_err(|e| e.to_string())
     })
     .await
@@ -463,7 +463,7 @@ pub async fn export_films_csv(
         let db_lock = db.lock().map_err(|e| e.to_string())?;
         let films = db_lock.list_all_films().map_err(|e| e.to_string())?;
         let p = Path::new(&target_path);
-        myfilmlibrary_core::transfer::export_to_csv(&films, p).map_err(|e| e.to_string())
+        lierkour_core::transfer::export_to_csv(&films, p).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("Execution error: {e}"))?
@@ -479,7 +479,7 @@ pub async fn export_films_markdown(
         let db_lock = db.lock().map_err(|e| e.to_string())?;
         let films = db_lock.list_all_films().map_err(|e| e.to_string())?;
         let p = Path::new(&target_path);
-        myfilmlibrary_core::transfer::export_to_markdown(&films, p).map_err(|e| e.to_string())
+        lierkour_core::transfer::export_to_markdown(&films, p).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("Execution error: {e}"))?

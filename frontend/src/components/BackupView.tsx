@@ -19,7 +19,7 @@ export const BackupView: React.FC<BackupViewProps> = ({ onRefresh }) => {
     try {
       const filePath = await save({
         filters: [{ name: 'ZIP Archive', extensions: ['zip'] }],
-        defaultPath: 'myfilmlibrary-backup.zip',
+        defaultPath: 'lierkour-backup.zip',
       });
       if (!filePath) return;
 
@@ -28,7 +28,7 @@ export const BackupView: React.FC<BackupViewProps> = ({ onRefresh }) => {
       setErrorMessage(null);
 
       const res = await invoke<ExportSummary>('export_backup_zip', { targetPath: filePath });
-      setStatusMessage(`Экспорт завершён: ${res.films} фильмов, ${res.posters} постеров сохранены в архив.`);
+      setStatusMessage(`Экспорт завершён: ${res.films} записей (фильмов и игр), ${res.posters} файлов сохранено в архив.`);
     } catch (err: any) {
       setErrorMessage(err?.toString() || 'Ошибка экспорта');
     } finally {
@@ -50,7 +50,7 @@ export const BackupView: React.FC<BackupViewProps> = ({ onRefresh }) => {
 
       const res = await invoke<ImportSummary>('import_backup_zip', { sourcePath: selected });
       setStatusMessage(
-        `Импорт успешен: добавлено ${res.added} фильмов, пропущено ${res.skipped} дубликатов, восстановлено ${res.posters_restored} постеров.`
+        `Импорт успешен: добавлено ${res.added} записей, пропущено ${res.skipped} дубликатов, восстановлено ${res.posters_restored} файлов.`
       );
       onRefresh();
     } catch (err: any) {
@@ -64,7 +64,7 @@ export const BackupView: React.FC<BackupViewProps> = ({ onRefresh }) => {
     try {
       const filePath = await save({
         filters: [{ name: 'CSV File', extensions: ['csv'] }],
-        defaultPath: 'myfilmlibrary.csv',
+        defaultPath: 'lierkour.csv',
       });
       if (!filePath) return;
 
@@ -73,7 +73,7 @@ export const BackupView: React.FC<BackupViewProps> = ({ onRefresh }) => {
       setErrorMessage(null);
 
       await invoke('export_films_csv', { targetPath: filePath });
-      setStatusMessage('Список фильмов успешно экспортирован в CSV!');
+      setStatusMessage('Медиатека успешно экспортирована в CSV!');
     } catch (err: any) {
       setErrorMessage(err?.toString() || 'Ошибка экспорта CSV');
     } finally {
@@ -85,7 +85,7 @@ export const BackupView: React.FC<BackupViewProps> = ({ onRefresh }) => {
     try {
       const filePath = await save({
         filters: [{ name: 'Markdown File', extensions: ['md'] }],
-        defaultPath: 'myfilmlibrary.md',
+        defaultPath: 'lierkour.md',
       });
       if (!filePath) return;
 
@@ -94,7 +94,7 @@ export const BackupView: React.FC<BackupViewProps> = ({ onRefresh }) => {
       setErrorMessage(null);
 
       await invoke('export_films_markdown', { targetPath: filePath });
-      setStatusMessage('Каталог успешно экспортирован в Markdown файл!');
+      setStatusMessage('Каталог медиатеки успешно экспортирован в Markdown файл!');
     } catch (err: any) {
       setErrorMessage(err?.toString() || 'Ошибка экспорта Markdown');
     } finally {

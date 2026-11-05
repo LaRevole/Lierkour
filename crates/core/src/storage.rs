@@ -18,8 +18,10 @@ use image::ImageFormat;
 
 use crate::error::{AppError, AppResult};
 
-const APP_DIR_NAME: &str = "MyFilmLibrary";
-pub const DATA_DIR_ENV: &str = "MY_FILM_LIBRARY_DATA_DIR";
+pub const APP_DIR_NAME: &str = "Lierkour";
+pub const LEGACY_APP_DIR_NAMES: &[&str] = &["com.myfilmlibrary.desktop", "MyFilmLibrary"];
+pub const DATA_DIR_ENV: &str = "LIERKOUR_DATA_DIR";
+pub const LEGACY_DATA_DIR_ENV: &str = "MY_FILM_LIBRARY_DATA_DIR";
 const MAX_IMAGE_DIMENSION: u32 = 8_000;
 pub const POSTER_THUMB_WIDTH: u32 = 300;
 pub const POSTER_THUMB_HEIGHT: u32 = 450;
@@ -37,16 +39,31 @@ impl AppPaths {
     /// Определяет каталог данных и создаёт необходимые папки.
     pub fn discover() -> AppResult<Self> {
         // Явный каталог полезен для переносимой сборки, тестов и отладки.
-        if let Some(custom_dir) = std::env::var_os(DATA_DIR_ENV).filter(|value| !value.is_empty()) {
+        if let Some(custom_dir) = std::env::var_os(DATA_DIR_ENV)
+            .or_else(|| std::env::var_os(LEGACY_DATA_DIR_ENV))
+            .filter(|value| !value.is_empty())
+        {
             return Self::from_data_dir(PathBuf::from(custom_dir));
         }
 
-        let data_dir = dirs::data_dir()
-            .map(|dir| dir.join(APP_DIR_NAME))
+        let base_data_dir = dirs::data_dir()
             .or_else(exe_side_data_dir)
             .ok_or(AppError::DataDirUnavailable)?;
 
-        Self::from_data_dir(data_dir)
+        let target_dir = base_data_dir.join(APP_DIR_NAME);
+
+        // Автоматический перенос данных из старых каталогов MyFilmLibrary при первом запуске Lierkour
+        if !target_dir.join("library.db").exists() {
+            for legacy_name in LEGACY_APP_DIR_NAMES {
+                let legacy_dir = base_data_dir.join(legacy_name);
+                if legacy_dir.join("library.db").exists() {
+                    let _ = copy_dir_contents(&legacy_dir, &target_dir);
+                    break;
+                }
+            }
+        }
+
+        Self::from_data_dir(target_dir)
     }
 
     /// Полезно для тестов и для переносимой сборки с явно заданным каталогом.
@@ -219,6 +236,24 @@ fn hex_value(byte: u8) -> Option<u8> {
         b'A'..=b'F' => Some(byte - b'A' + 10),
         _ => None,
     }
+}
+
+fn copy_dir_contents(src: &Path, dst: &Path) -> std::io::Result<()> {
+    if !dst.exists() {
+        fs::create_dir_all(dst)?;
+    }
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let file_name = entry.file_name();
+        let target_path = dst.join(file_name);
+        if entry_path.is_dir() {
+            copy_dir_contents(&entry_path, &target_path)?;
+        } else if !target_path.exists() {
+            let _ = fs::copy(&entry_path, &target_path);
+        }
+    }
+    Ok(())
 }
 
 fn exe_side_data_dir() -> Option<PathBuf> {

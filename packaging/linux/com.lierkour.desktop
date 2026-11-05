@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=Lierkour
+GenericName=Медиатека
+Comment=Хранитель пройденных Медиа: фильмы, сериалы, аниме и видеоигры
+Exec=lierkour-app %U
+Icon=lierkour
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;Game;Database;
+StartupWMClass=lierkour-app
+MimeType=x-scheme-handler/lierkour;
+

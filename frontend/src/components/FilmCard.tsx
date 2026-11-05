@@ -3,7 +3,7 @@ import type { Film } from '../types';
 import { useTranslation } from 'react-i18next';
 import { invoke } from '@tauri-apps/api/core';
 import { isSerialCategory } from '../utils';
-import { Star, Clock, Film as FilmIcon, Edit, Trash2, Layers } from 'lucide-react';
+import { Star, Clock, Film as FilmIcon, Edit, Trash2, Layers, Gamepad2 } from 'lucide-react';
 
 interface FilmCardProps {
   film: Film;
@@ -60,10 +60,12 @@ export const FilmCard: React.FC<FilmCardProps> = ({ film, onOpen, onEdit, onDele
       .catch(() => setSeasons([]));
   }, [film.id, film.category]);
 
+  const isGame = film.media_type === 'game';
   const isDeck =
-    isSerialCategory(film.category) ||
-    seasons.length > 0 ||
-    (film.seasons_total ? film.seasons_total > 1 : false);
+    !isGame &&
+    (isSerialCategory(film.category) ||
+      seasons.length > 0 ||
+      (film.seasons_total ? film.seasons_total > 1 : false));
   const hasSeasons = seasons.length > 0;
 
   const getStatusBadge = (status: string) => {
@@ -111,9 +113,13 @@ export const FilmCard: React.FC<FilmCardProps> = ({ film, onOpen, onEdit, onDele
             />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center p-4 text-center bg-gradient-to-br from-slate-100 to-slate-200 dark:from-slate-900 dark:to-slate-950 text-slate-400 dark:text-slate-600 select-none">
-              <FilmIcon className="w-10 h-10 mb-2 opacity-40" />
+              {isGame ? (
+                <Gamepad2 className="w-10 h-10 mb-2 opacity-40 text-indigo-500" />
+              ) : (
+                <FilmIcon className="w-10 h-10 mb-2 opacity-40" />
+              )}
               <span className="text-xs font-bold opacity-50 tracking-wider uppercase">
-                {film.category || 'Film'}
+                {film.category || (isGame ? 'Игра' : 'Film')}
               </span>
             </div>
           )}
@@ -132,7 +138,9 @@ export const FilmCard: React.FC<FilmCardProps> = ({ film, onOpen, onEdit, onDele
               film.status
             )}`}
           >
-            {t(`status.${film.status}`)}
+            {isGame
+              ? film.completion_status || t(`status.game_${film.status}`)
+              : t(`status.movie_${film.status}`)}
           </span>
 
           {/* Quick action buttons on hover (when not a deck) */}
@@ -151,7 +159,7 @@ export const FilmCard: React.FC<FilmCardProps> = ({ film, onOpen, onEdit, onDele
                   e.stopPropagation();
                   onEdit(film);
                 }}
-                title={t('film.edit')}
+                title={isGame ? t('game.edit') : t('film.edit')}
                 className="p-1.5 rounded-lg bg-white/90 dark:bg-slate-900/80 backdrop-blur-md border border-slate-300 dark:border-slate-700 text-slate-700 dark:text-slate-200 hover:text-white hover:bg-indigo-600 transition-colors shadow-sm cursor-pointer"
               >
                 <Edit className="w-3.5 h-3.5" />
@@ -161,11 +169,11 @@ export const FilmCard: React.FC<FilmCardProps> = ({ film, onOpen, onEdit, onDele
                 onClick={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  if (window.confirm(t('film.delete_confirm'))) {
+                  if (window.confirm(isGame ? t('game.delete_confirm') : t('film.delete_confirm'))) {
                     onDelete(film.id);
                   }
                 }}
-                title={t('film.delete')}
+                title={isGame ? t('game.delete') : t('film.delete')}
                 className="p-1.5 rounded-lg bg-white/90 dark:bg-slate-900/80 backdrop-blur-md border border-slate-300 dark:border-slate-700 text-rose-600 dark:text-rose-300 hover:text-white hover:bg-rose-600 transition-colors shadow-sm cursor-pointer"
               >
                 <Trash2 className="w-3.5 h-3.5" />
@@ -181,29 +189,52 @@ export const FilmCard: React.FC<FilmCardProps> = ({ film, onOpen, onEdit, onDele
           </div>
         )}
 
-        {/* Runtime */}
-        {film.runtime_minutes && (
-          <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1 rounded-md bg-white/90 dark:bg-slate-950/85 px-2 py-0.5 text-[11px] font-medium text-slate-700 dark:text-slate-300 backdrop-blur-sm border border-slate-200 dark:border-slate-700/60 shadow">
-            <Clock className="w-3 h-3 text-slate-500 dark:text-slate-400" />
-            <span>
-              {film.runtime_minutes} {t('film.minutes_short')}
-            </span>
-          </div>
+        {/* Playtime / Runtime */}
+        {isGame ? (
+          film.playtime_hours !== null && film.playtime_hours !== undefined && (
+            <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1 rounded-md bg-white/90 dark:bg-slate-950/85 px-2 py-0.5 text-[11px] font-medium text-slate-700 dark:text-slate-300 backdrop-blur-sm border border-slate-200 dark:border-slate-700/60 shadow">
+              <Clock className="w-3 h-3 text-indigo-500 dark:text-indigo-400" />
+              <span>
+                {film.playtime_hours} {t('game.playtime_short')}
+              </span>
+            </div>
+          )
+        ) : (
+          film.runtime_minutes && (
+            <div className="absolute bottom-2.5 right-2.5 flex items-center gap-1 rounded-md bg-white/90 dark:bg-slate-950/85 px-2 py-0.5 text-[11px] font-medium text-slate-700 dark:text-slate-300 backdrop-blur-sm border border-slate-200 dark:border-slate-700/60 shadow">
+              <Clock className="w-3 h-3 text-slate-500 dark:text-slate-400" />
+              <span>
+                {film.runtime_minutes} {t('film.minutes_short')}
+              </span>
+            </div>
+          )
         )}
       </div>
 
       {/* Info Block */}
       <div className="flex flex-1 flex-col p-3.5 justify-between gap-2">
         <div>
-          <div className="flex items-center gap-1.5 text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold mb-0.5">
-            <span>{film.category}</span>
-            {film.year && (
-              <>
-                <span>•</span>
-                <span>{film.year}</span>
-              </>
-            )}
-          </div>
+          {isGame ? (
+            <div className="flex items-center gap-1.5 text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold mb-0.5">
+              <span>{film.category || 'Игры'}</span>
+              {film.launcher && (
+                <>
+                  <span>•</span>
+                  <span className="truncate max-w-[100px]">{film.launcher}</span>
+                </>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center gap-1.5 text-[11px] text-indigo-600 dark:text-indigo-400 font-semibold mb-0.5">
+              <span>{film.category}</span>
+              {film.year && (
+                <>
+                  <span>•</span>
+                  <span>{film.year}</span>
+                </>
+              )}
+            </div>
+          )}
           <h3 className="line-clamp-1 text-sm font-semibold text-slate-900 dark:text-slate-100 group-hover:text-indigo-600 dark:group-hover:text-indigo-300 transition-colors">
             {film.title}
           </h3>
@@ -214,16 +245,33 @@ export const FilmCard: React.FC<FilmCardProps> = ({ film, onOpen, onEdit, onDele
           )}
         </div>
 
-        <div className="border-t border-slate-200 dark:border-slate-800/80 pt-2 text-xs text-slate-500 dark:text-slate-400 flex items-center justify-between">
-          <span className="truncate max-w-[150px]">
-            {film.director || t('film.unknown_director')}
-          </span>
-          {film.country && (
-            <span className="text-[11px] text-slate-400 dark:text-slate-500 uppercase tracking-wider font-semibold">
-              {film.country}
+        {isGame ? (
+          <div className="border-t border-slate-200 dark:border-slate-800/80 pt-2 text-xs text-slate-500 dark:text-slate-400 flex items-center justify-between">
+            <span className="truncate max-w-[110px] font-semibold text-slate-700 dark:text-slate-300">
+              {film.platform || t('game.unknown_platform')}
             </span>
-          )}
-        </div>
+            {film.playtime_hours !== null && film.playtime_hours !== undefined ? (
+              <span className="text-[11px] font-bold text-indigo-600 dark:text-indigo-400 bg-indigo-500/10 px-1.5 py-0.5 rounded border border-indigo-500/20">
+                {film.playtime_hours} {t('game.playtime_short')}
+              </span>
+            ) : film.completion_status ? (
+              <span className="text-[11px] text-slate-400 font-medium truncate max-w-[90px]">
+                {film.completion_status}
+              </span>
+            ) : null}
+          </div>
+        ) : (
+          <div className="border-t border-slate-200 dark:border-slate-800/80 pt-2 text-xs text-slate-500 dark:text-slate-400 flex items-center justify-between">
+            <span className="truncate max-w-[150px]">
+              {film.director || t('film.unknown_director')}
+            </span>
+            {film.country && (
+              <span className="text-[11px] text-slate-400 dark:text-slate-500 uppercase tracking-wider font-semibold">
+                {film.country}
+              </span>
+            )}
+          </div>
+        )}
       </div>
       </div>
 

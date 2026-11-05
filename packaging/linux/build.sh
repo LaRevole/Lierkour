@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Скрипт сборки MyFilmLibrary для Linux (CachyOS / Arch / Ubuntu / Fedora)
-echo "=== Сборка MyFilmLibrary для Linux ==="
+# Скрипт сборки Lierkour для Linux (CachyOS / Arch / Ubuntu / Fedora)
+echo "=== Сборка Lierkour для Linux ==="
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
@@ -38,7 +38,7 @@ echo "🦀 Шаг 2/3: Компиляция Rust backend..."
 cargo build --release --features custom-protocol \
     --manifest-path "$ROOT_DIR/src-tauri/Cargo.toml"
 
-BINARY="$ROOT_DIR/target/release/myfilmlibrary-app"
+BINARY="$ROOT_DIR/target/release/lierkour-app"
 
 if [ -f "$BINARY" ]; then
     echo "✅ Шаг 3/3: Бинарный файл успешно собран:"

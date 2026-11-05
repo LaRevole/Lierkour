@@ -1,18 +1,18 @@
-# Build MyFilmLibrary for Windows (x64).
+# Build Lierkour for Windows (x64).
 #
 # Usage (from the repository root):
 #   powershell -ExecutionPolicy Bypass -File packaging/windows/build.ps1
 #
-# The resulting portable folder is written to dist/MyFilmLibrary-windows-x64.
+# The resulting portable folder is written to dist/Lierkour-windows-x64.
 
 $ErrorActionPreference = "Stop"
 
 $root = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 $frontend = Join-Path $root "frontend"
 $manifest = Join-Path $root "src-tauri/Cargo.toml"
-$outDir = Join-Path $root "dist/MyFilmLibrary-windows-x64"
+$outDir = Join-Path $root "dist/Lierkour-windows-x64"
 
-Write-Host "=== Building MyFilmLibrary for Windows ===" -ForegroundColor Cyan
+Write-Host "=== Building Lierkour for Windows ===" -ForegroundColor Cyan
 
 if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
     throw "npm was not found. Install Node.js from https://nodejs.org/"
@@ -40,9 +40,9 @@ if ($LASTEXITCODE -ne 0) { throw "cargo build failed" }
 
 Write-Host "Step 3/3: Collecting portable build..." -ForegroundColor Yellow
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
-Copy-Item (Join-Path $root "target/release/myfilmlibrary-app.exe") $outDir -Force
+Copy-Item (Join-Path $root "target/release/lierkour-app.exe") $outDir -Force
 Copy-Item (Join-Path $PSScriptRoot "run-portable.bat") $outDir -Force
 
 Write-Host "Done: $outDir" -ForegroundColor Green
-Write-Host "  myfilmlibrary-app.exe - normal launch (data in %APPDATA%)"
-Write-Host "  run-portable.bat      - portable launch (data in .\data)"
+Write-Host "  lierkour-app.exe - normal launch (data in %APPDATA%)"
+Write-Host "  run-portable.bat - portable launch (data in .\data)"

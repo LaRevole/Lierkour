@@ -10,12 +10,13 @@ use thiserror::Error;
 
 /// Категории, которые предлагаются пользователю по умолчанию.
 /// Свои категории добавляются в редакторе и сохраняются вместе с фильмом.
-pub const DEFAULT_CATEGORIES: [&str; 6] = [
+pub const DEFAULT_CATEGORIES: [&str; 7] = [
     "Фильмы",
     "Сериалы",
     "Мультфильмы",
     "Аниме",
     "Документальные",
+    "Игры",
     "Другое",
 ];
 
@@ -81,6 +82,47 @@ impl FilmStatus {
 }
 
 impl fmt::Display for FilmStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Тип медиа-контента (фильмы/сериалы или видеоигры).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaType {
+    #[default]
+    Movie,
+    Game,
+}
+
+impl MediaType {
+    pub const ALL: [Self; 2] = [Self::Movie, Self::Game];
+
+    pub const fn as_db_str(self) -> &'static str {
+        match self {
+            Self::Movie => "movie",
+            Self::Game => "game",
+        }
+    }
+
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Movie => "Фильм",
+            Self::Game => "Игра",
+        }
+    }
+
+    pub fn from_db_str(value: &str) -> Option<Self> {
+        match value {
+            "movie" => Some(Self::Movie),
+            "game" => Some(Self::Game),
+            _ => None,
+        }
+    }
+}
+
+impl fmt::Display for MediaType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.label())
     }
@@ -227,6 +269,20 @@ pub struct DashboardStats {
     pub top_directors: Vec<(String, usize)>,
     pub total_seasons: usize,
     pub watched_seasons: usize,
+
+    // Игровая аналитика
+    #[serde(default)]
+    pub total_games: usize,
+    #[serde(default)]
+    pub completed_games: usize,
+    #[serde(default)]
+    pub in_progress_games: usize,
+    #[serde(default)]
+    pub dropped_games: usize,
+    #[serde(default)]
+    pub total_playtime_hours: u64,
+    #[serde(default)]
+    pub top_platforms: Vec<(String, usize)>,
 }
 
 /// Связь в том виде, в котором её видно со страницы конкретного фильма.
@@ -289,6 +345,16 @@ pub struct Film {
     pub quotes: Vec<String>,
     #[serde(default)]
     pub parent_id: Option<i64>,
+    #[serde(default)]
+    pub media_type: MediaType,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub launcher: Option<String>,
+    #[serde(default)]
+    pub playtime_hours: Option<u32>,
+    #[serde(default)]
+    pub completion_status: Option<String>,
 }
 
 impl Film {
@@ -410,6 +476,16 @@ pub struct NewFilm {
     pub quotes: Vec<String>,
     #[serde(default)]
     pub parent_id: Option<i64>,
+    #[serde(default)]
+    pub media_type: MediaType,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub launcher: Option<String>,
+    #[serde(default)]
+    pub playtime_hours: Option<u32>,
+    #[serde(default)]
+    pub completion_status: Option<String>,
 }
 
 impl Default for NewFilm {
@@ -434,6 +510,11 @@ impl Default for NewFilm {
             watched_seasons: Vec::new(),
             quotes: Vec::new(),
             parent_id: None,
+            media_type: MediaType::Movie,
+            platform: None,
+            launcher: None,
+            playtime_hours: None,
+            completion_status: None,
         }
     }
 }
@@ -447,6 +528,10 @@ impl NewFilm {
     pub const MAX_COUNTRY_CHARS: usize = 120;
     pub const MAX_IMDB_ID_CHARS: usize = 20;
     pub const MAX_TAGS_CHARS: usize = 300;
+    pub const MAX_PLATFORM_CHARS: usize = 100;
+    pub const MAX_LAUNCHER_CHARS: usize = 100;
+    pub const MAX_COMPLETION_STATUS_CHARS: usize = 60;
+    pub const MAX_PLAYTIME_HOURS: u32 = 100_000;
 
     /// Нормализованная строка жанров: без пустых элементов и дублей.
     pub fn genres_db(&self) -> String {
@@ -562,6 +647,31 @@ impl NewFilm {
         {
             return Err(FilmValidationError::RatingOutOfRange);
         }
+
+        if let Some(ref platform) = self.platform
+            && platform.chars().count() > Self::MAX_PLATFORM_CHARS
+        {
+            return Err(FilmValidationError::PlatformTooLong(Self::MAX_PLATFORM_CHARS));
+        }
+
+        if let Some(ref launcher) = self.launcher
+            && launcher.chars().count() > Self::MAX_LAUNCHER_CHARS
+        {
+            return Err(FilmValidationError::LauncherTooLong(Self::MAX_LAUNCHER_CHARS));
+        }
+
+        if let Some(ref status) = self.completion_status
+            && status.chars().count() > Self::MAX_COMPLETION_STATUS_CHARS
+        {
+            return Err(FilmValidationError::CompletionStatusTooLong(Self::MAX_COMPLETION_STATUS_CHARS));
+        }
+
+        if let Some(hours) = self.playtime_hours
+            && hours > Self::MAX_PLAYTIME_HOURS
+        {
+            return Err(FilmValidationError::PlaytimeOutOfRange(Self::MAX_PLAYTIME_HOURS));
+        }
+
         Ok(())
     }
 }
@@ -641,6 +751,14 @@ pub enum FilmValidationError {
     SeasonOutOfRange(u16, u16),
     #[error("Оценка должна быть числом от 1 до 10")]
     RatingOutOfRange,
+    #[error("Название платформы слишком длинное: максимум {0} символов")]
+    PlatformTooLong(usize),
+    #[error("Название лаунчера слишком длинное: максимум {0} символов")]
+    LauncherTooLong(usize),
+    #[error("Статус прохождения слишком длинный: максимум {0} символов")]
+    CompletionStatusTooLong(usize),
+    #[error("Время в игре не может превышать {0} часов")]
+    PlaytimeOutOfRange(u32),
 }
 
 /// Параметры поиска и фильтрации списка.
@@ -649,11 +767,22 @@ pub struct FilmFilter {
     pub search: String,
     pub status: Option<FilmStatus>,
     pub category: Option<String>,
+    #[serde(default)]
+    pub media_type: Option<MediaType>,
+    #[serde(default)]
+    pub platform: Option<String>,
+    #[serde(default)]
+    pub launcher: Option<String>,
 }
 
 impl FilmFilter {
     pub fn is_active(&self) -> bool {
-        !self.search.trim().is_empty() || self.status.is_some() || self.category.is_some()
+        !self.search.trim().is_empty()
+            || self.status.is_some()
+            || self.category.is_some()
+            || self.media_type.is_some()
+            || self.platform.is_some()
+            || self.launcher.is_some()
     }
 }
 
@@ -814,5 +943,37 @@ mod tests {
         season.episodes_watched = 10;
         assert_eq!(season.progress_percent(), 100);
         assert!(season.is_completed());
+    }
+
+    #[test]
+    fn media_type_and_game_fields_validation() {
+        for m in MediaType::ALL {
+            assert_eq!(MediaType::from_db_str(m.as_db_str()), Some(m));
+        }
+
+        let mut game = NewFilm {
+            title: "Ведьмак 3: Дикая Охота".to_owned(),
+            media_type: MediaType::Game,
+            category: "Игры".to_owned(),
+            platform: Some("ПК".to_owned()),
+            launcher: Some("Steam".to_owned()),
+            playtime_hours: Some(120),
+            completion_status: Some("Пройдена".to_owned()),
+            ..NewFilm::default()
+        };
+        assert!(game.validate().is_ok());
+
+        game.playtime_hours = Some(200_000);
+        assert_eq!(
+            game.validate(),
+            Err(FilmValidationError::PlaytimeOutOfRange(NewFilm::MAX_PLAYTIME_HOURS))
+        );
+        game.playtime_hours = Some(120);
+
+        game.platform = Some("P".repeat(NewFilm::MAX_PLATFORM_CHARS + 1));
+        assert_eq!(
+            game.validate(),
+            Err(FilmValidationError::PlatformTooLong(NewFilm::MAX_PLATFORM_CHARS))
+        );
     }
 }

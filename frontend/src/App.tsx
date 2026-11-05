@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 import type { Film, FilmFilter, DashboardStats, NewFilm } from './types';
@@ -21,6 +21,8 @@ import {
   Moon,
   ChevronLeft,
   ChevronRight,
+  Gamepad2,
+  Layers,
 } from 'lucide-react';
 
 type ActiveTab = 'library' | 'analytics' | 'backup' | 'settings';
@@ -44,6 +46,7 @@ export const App: React.FC = () => {
 
   // Search & Filter
   const [search, setSearch] = useState('');
+  const [selectedMediaType, setSelectedMediaType] = useState<'all' | 'movie' | 'game'>('all');
   const [selectedCategory, setSelectedCategory] = useState<string>('all');
   const [selectedStatus, setSelectedStatus] = useState<string>('all');
 
@@ -57,6 +60,73 @@ export const App: React.FC = () => {
   const [detailRefreshCounter, setDetailRefreshCounter] = useState(0);
   const [historyStack, setHistoryStack] = useState<NavigationEntry[]>([]);
   const [forwardStack, setForwardStack] = useState<NavigationEntry[]>([]);
+
+  // Navigation Gesture Refs (to survive re-renders and eliminate skipping)
+  const lastGestureTimeRef = useRef<number>(0);
+  const accumulatedDeltaXRef = useRef<number>(0);
+  const isGestureLockedRef = useRef<boolean>(false);
+  const lastMouseNavTimeRef = useRef<number>(0);
+
+  const handleSelectMediaType = (type: 'all' | 'movie' | 'game') => {
+    setSelectedMediaType(type);
+    setSelectedCategory('all');
+    setSelectedStatus('all');
+  };
+
+  // Filtered categories depending on media type tab
+  const visibleCategories = useMemo(() => {
+    if (selectedMediaType === 'game') {
+      const gameCategories = new Set<string>(['Игры']);
+      allFilmsRaw.forEach((f) => {
+        if (f.media_type === 'game' && f.category) {
+          gameCategories.add(f.category);
+        }
+      });
+      return Array.from(gameCategories);
+    }
+    if (selectedMediaType === 'movie') {
+      const movieCategories = new Set<string>();
+      categories.forEach((c) => {
+        if (c !== 'Игры') movieCategories.add(c);
+      });
+      allFilmsRaw.forEach((f) => {
+        if (f.media_type !== 'game' && f.category && f.category !== 'Игры') {
+          movieCategories.add(f.category);
+        }
+      });
+      return Array.from(movieCategories);
+    }
+    return categories;
+  }, [selectedMediaType, categories, allFilmsRaw]);
+
+  // Contextual status options
+  const statusOptions = useMemo(() => {
+    if (selectedMediaType === 'game') {
+      return [
+        { value: 'all', label: t('status.game_all') },
+        { value: 'want_to_watch', label: t('status.game_want_to_watch') },
+        { value: 'watching', label: t('status.game_watching') },
+        { value: 'watched', label: t('status.game_watched') },
+        { value: 'dropped', label: t('status.game_dropped') },
+      ];
+    }
+    if (selectedMediaType === 'movie') {
+      return [
+        { value: 'all', label: t('status.movie_all') },
+        { value: 'want_to_watch', label: t('status.movie_want_to_watch') },
+        { value: 'watching', label: t('status.movie_watching') },
+        { value: 'watched', label: t('status.movie_watched') },
+        { value: 'dropped', label: t('status.movie_dropped') },
+      ];
+    }
+    return [
+      { value: 'all', label: t('status.all_union') },
+      { value: 'want_to_watch', label: t('status.want_to_watch_all') },
+      { value: 'watching', label: t('status.watching_all') },
+      { value: 'watched', label: t('status.watched_all') },
+      { value: 'dropped', label: t('status.dropped_all') },
+    ];
+  }, [selectedMediaType, t]);
 
   // Settings
   const [omdbApiKey, setOmdbApiKey] = useState('');
@@ -114,6 +184,7 @@ export const App: React.FC = () => {
         search: search.trim(),
         category: selectedCategory === 'all' ? null : selectedCategory,
         status: selectedStatus === 'all' ? null : (selectedStatus as any),
+        media_type: selectedMediaType === 'all' ? null : selectedMediaType,
       };
 
       const [filmsRes, allRaw, categoriesRes, statsRes] = await Promise.all([
@@ -142,7 +213,7 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     fetchData();
-  }, [search, selectedCategory, selectedStatus]);
+  }, [search, selectedCategory, selectedStatus, selectedMediaType]);
 
   const toggleLanguage = () => {
     const nextLang = i18n.language.startsWith('ru') ? 'en' : 'ru';
@@ -269,11 +340,16 @@ export const App: React.FC = () => {
     };
 
     const handleMouseUp = (e: MouseEvent) => {
+      const now = Date.now();
+      if (now - lastMouseNavTimeRef.current < 400) return;
+
       if (e.button === 3) {
         e.preventDefault();
+        lastMouseNavTimeRef.current = now;
         handleBack();
       } else if (e.button === 4) {
         e.preventDefault();
+        lastMouseNavTimeRef.current = now;
         handleForward();
       }
     };
@@ -288,9 +364,7 @@ export const App: React.FC = () => {
 
   // Touchpad 2-finger swipe navigation: Right -> Back, Left -> Forward
   useEffect(() => {
-    let accumulatedDeltaX = 0;
-    let lastGestureTime = 0;
-    let resetTimer: any = null;
+    let resetTimer: ReturnType<typeof setTimeout> | null = null;
 
     const handleWheel = (e: WheelEvent) => {
       if (isModalOpen) return;
@@ -298,26 +372,29 @@ export const App: React.FC = () => {
       const absX = Math.abs(e.deltaX);
       const absY = Math.abs(e.deltaY);
 
-      // Trigger if horizontal movement is dominant
-      if (absX > absY * 1.3 && absX > 15) {
+      // Trigger if horizontal movement is strictly dominant and significant
+      if (absX > absY * 1.5 && absX > 18) {
         const now = Date.now();
-        if (now - lastGestureTime < 700) {
+        if (now - lastGestureTimeRef.current < 750 || isGestureLockedRef.current) {
           return;
         }
 
-        accumulatedDeltaX += e.deltaX;
-        clearTimeout(resetTimer);
+        accumulatedDeltaXRef.current += e.deltaX;
+        if (resetTimer) clearTimeout(resetTimer);
         resetTimer = setTimeout(() => {
-          accumulatedDeltaX = 0;
-        }, 200);
+          accumulatedDeltaXRef.current = 0;
+          isGestureLockedRef.current = false;
+        }, 220);
 
-        if (accumulatedDeltaX < -70) {
-          accumulatedDeltaX = 0;
-          lastGestureTime = now;
+        if (accumulatedDeltaXRef.current < -120) {
+          accumulatedDeltaXRef.current = 0;
+          lastGestureTimeRef.current = now;
+          isGestureLockedRef.current = true;
           handleBack();
-        } else if (accumulatedDeltaX > 70) {
-          accumulatedDeltaX = 0;
-          lastGestureTime = now;
+        } else if (accumulatedDeltaXRef.current > 120) {
+          accumulatedDeltaXRef.current = 0;
+          lastGestureTimeRef.current = now;
+          isGestureLockedRef.current = true;
           handleForward();
         }
       }
@@ -337,11 +414,15 @@ export const App: React.FC = () => {
 
     const handleTouchEnd = (e: TouchEvent) => {
       if (e.changedTouches.length >= 1) {
+        const now = Date.now();
+        if (now - lastGestureTimeRef.current < 500) return;
+
         const deltaX = e.changedTouches[0].clientX - touchStartX;
         const deltaY = e.changedTouches[0].clientY - touchStartY;
-        const duration = Date.now() - touchStartTime;
+        const duration = now - touchStartTime;
 
-        if (duration < 500 && Math.abs(deltaX) > 80 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4) {
+        if (duration < 500 && Math.abs(deltaX) > 90 && Math.abs(deltaX) > Math.abs(deltaY) * 1.5) {
+          lastGestureTimeRef.current = now;
           if (deltaX > 0) {
             handleBack();
           } else {
@@ -359,7 +440,7 @@ export const App: React.FC = () => {
       window.removeEventListener('wheel', handleWheel);
       window.removeEventListener('touchstart', handleTouchStart);
       window.removeEventListener('touchend', handleTouchEnd);
-      clearTimeout(resetTimer);
+      if (resetTimer) clearTimeout(resetTimer);
     };
   }, [historyStack, forwardStack, selectedFilm, activeTab, isModalOpen]);
 
@@ -387,37 +468,44 @@ export const App: React.FC = () => {
     >
       {/* Top Header */}
       <header
-        className={`sticky top-0 z-30 border-b backdrop-blur-xl px-6 py-3.5 ${
+        className={`sticky top-0 z-30 border-b backdrop-blur-xl px-3 sm:px-6 py-2.5 sm:py-3.5 ${
           isLight
             ? 'border-slate-200 bg-white/80'
             : 'border-slate-800/80 bg-slate-950/80'
         }`}
       >
-        <div className="mx-auto flex max-w-7xl items-center justify-between gap-6">
+        <div className="mx-auto flex max-w-7xl items-center justify-between gap-2 sm:gap-4">
           {/* Logo & Navigation */}
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <div
               onClick={() => handleTabChange('library')}
-              className="flex items-center gap-3 select-none cursor-pointer"
+              className="flex items-center gap-2 sm:gap-2.5 select-none cursor-pointer shrink-0"
             >
-              <div className="h-10 w-10 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 flex items-center justify-center font-black text-white shadow-lg shadow-indigo-600/30">
-                <FilmIcon className="w-5 h-5 text-white" />
+              <div className="h-9 w-9 sm:h-10 sm:w-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-violet-500 flex items-center justify-center font-black text-white shadow-lg shadow-indigo-600/30 shrink-0">
+                <Layers className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
               </div>
-              <div>
-                <h1 className="text-base font-bold tracking-tight">{t('app.title')}</h1>
-                <span className="text-[10px] text-slate-500 font-semibold tracking-wider uppercase">
-                  v1.2.0 • Tauri 2
+              <div className="flex flex-col">
+                <div className="flex items-center gap-1.5">
+                  <h1 className="text-sm sm:text-base font-extrabold tracking-tight bg-gradient-to-r from-indigo-500 to-violet-500 bg-clip-text text-transparent">
+                    {t('app.title')}
+                  </h1>
+                  <span className="text-[9px] sm:text-[10px] bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 font-bold px-1.5 py-0.2 rounded border border-indigo-500/20">
+                    v2.0
+                  </span>
+                </div>
+                <span className="text-[9px] sm:text-[10px] text-slate-500 dark:text-slate-400 font-medium tracking-tight hidden md:block">
+                  {t('app.tagline')}
                 </span>
               </div>
             </div>
 
             {/* Back / Forward Navigation Buttons */}
-            <div className="flex items-center gap-1 bg-slate-100 dark:bg-slate-900/80 p-1 rounded-xl border border-slate-200 dark:border-slate-800">
+            <div className="flex items-center gap-0.5 bg-slate-100 dark:bg-slate-900/80 p-0.5 sm:p-1 rounded-xl border border-slate-200 dark:border-slate-800 shrink-0">
               <button
                 onClick={handleBack}
                 disabled={historyStack.length === 0 && !selectedFilm}
                 title="Назад (Мышь: боковая кнопка назад / Тачпад: свайп вправо)"
-                className="p-1.5 rounded-lg text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-800 disabled:opacity-25 disabled:hover:text-slate-400 disabled:hover:bg-transparent transition-all cursor-pointer disabled:cursor-not-allowed"
+                className="p-1 sm:p-1.5 rounded-lg text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-800 disabled:opacity-25 disabled:hover:text-slate-400 disabled:hover:bg-transparent transition-all cursor-pointer disabled:cursor-not-allowed"
               >
                 <ChevronLeft className="w-4 h-4" />
               </button>
@@ -425,17 +513,18 @@ export const App: React.FC = () => {
                 onClick={handleForward}
                 disabled={forwardStack.length === 0}
                 title="Вперед (Мышь: боковая кнопка вперед / Тачпад: свайп влево)"
-                className="p-1.5 rounded-lg text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-800 disabled:opacity-25 disabled:hover:text-slate-400 disabled:hover:bg-transparent transition-all cursor-pointer disabled:cursor-not-allowed"
+                className="p-1 sm:p-1.5 rounded-lg text-slate-600 dark:text-slate-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:bg-white dark:hover:bg-slate-800 disabled:opacity-25 disabled:hover:text-slate-400 disabled:hover:bg-transparent transition-all cursor-pointer disabled:cursor-not-allowed"
               >
                 <ChevronRight className="w-4 h-4" />
               </button>
             </div>
 
             {/* Nav Links */}
-            <nav className="flex items-center gap-1">
+            <nav className="flex items-center gap-0.5 sm:gap-1 shrink-0">
               <button
                 onClick={() => handleTabChange('library')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                title={t('app.nav_library')}
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
                   activeTab === 'library' && !selectedFilm
                     ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
                     : isLight
@@ -443,13 +532,14 @@ export const App: React.FC = () => {
                     : 'text-slate-400 hover:bg-slate-900'
                 }`}
               >
-                <Library className="w-4 h-4" />
-                <span>{t('app.nav_library')}</span>
+                <Library className="w-4 h-4 shrink-0" />
+                <span className="hidden lg:inline">{t('app.nav_library')}</span>
               </button>
 
               <button
                 onClick={() => handleTabChange('analytics')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                title={t('app.nav_analytics')}
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
                   activeTab === 'analytics'
                     ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
                     : isLight
@@ -457,13 +547,14 @@ export const App: React.FC = () => {
                     : 'text-slate-400 hover:bg-slate-900'
                 }`}
               >
-                <BarChart3 className="w-4 h-4" />
-                <span>{t('app.nav_analytics')}</span>
+                <BarChart3 className="w-4 h-4 shrink-0" />
+                <span className="hidden lg:inline">{t('app.nav_analytics')}</span>
               </button>
 
               <button
                 onClick={() => handleTabChange('backup')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                title={t('app.nav_backup')}
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
                   activeTab === 'backup'
                     ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
                     : isLight
@@ -471,13 +562,14 @@ export const App: React.FC = () => {
                     : 'text-slate-400 hover:bg-slate-900'
                 }`}
               >
-                <Archive className="w-4 h-4" />
-                <span>{t('app.nav_backup')}</span>
+                <Archive className="w-4 h-4 shrink-0" />
+                <span className="hidden lg:inline">{t('app.nav_backup')}</span>
               </button>
 
               <button
                 onClick={() => handleTabChange('settings')}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
+                title={t('app.nav_settings')}
+                className={`flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl text-xs font-semibold transition-all ${
                   activeTab === 'settings'
                     ? 'bg-indigo-600 text-white shadow-md shadow-indigo-600/25'
                     : isLight
@@ -485,21 +577,27 @@ export const App: React.FC = () => {
                     : 'text-slate-400 hover:bg-slate-900'
                 }`}
               >
-                <Settings className="w-4 h-4" />
-                <span>{t('app.nav_settings')}</span>
+                <Settings className="w-4 h-4 shrink-0" />
+                <span className="hidden lg:inline">{t('app.nav_settings')}</span>
               </button>
             </nav>
           </div>
 
           {/* Quick Search in Header (when in library) */}
           {activeTab === 'library' && !selectedFilm && (
-            <div className="relative flex-1 max-w-md hidden md:block">
+            <div className="relative flex-1 max-w-xs xl:max-w-md hidden md:block">
               <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" />
               <input
                 type="text"
                 value={search}
                 onChange={(e) => setSearch(e.target.value)}
-                placeholder={t('app.search_placeholder')}
+                placeholder={
+                  selectedMediaType === 'game'
+                    ? t('app.search_placeholder_games')
+                    : selectedMediaType === 'movie'
+                    ? t('app.search_placeholder_movies')
+                    : t('app.search_placeholder')
+                }
                 className={`w-full rounded-xl border pl-10 pr-4 py-2 text-xs focus:border-indigo-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 transition-all ${
                   isLight
                     ? 'border-slate-300 bg-white placeholder-slate-400 text-slate-900'
@@ -510,11 +608,11 @@ export const App: React.FC = () => {
           )}
 
           {/* Actions & Language & Theme Switcher */}
-          <div className="flex items-center gap-2.5">
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             <button
               onClick={() => handleThemeChange(isLight ? 'dark' : 'light')}
               title={isLight ? t('settings.theme_dark') : t('settings.theme_light')}
-              className={`p-2 rounded-xl border transition-colors ${
+              className={`p-2 rounded-xl border transition-colors shrink-0 ${
                 isLight
                   ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
                   : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
@@ -525,7 +623,8 @@ export const App: React.FC = () => {
 
             <button
               onClick={toggleLanguage}
-              className={`flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors ${
+              title="Переключить язык (RU/EN)"
+              className={`flex items-center gap-1 rounded-xl border px-2.5 sm:px-3 py-2 text-xs font-semibold uppercase tracking-wider transition-colors shrink-0 ${
                 isLight
                   ? 'border-slate-300 bg-white text-slate-700 hover:bg-slate-100'
                   : 'border-slate-800 bg-slate-900 text-slate-300 hover:bg-slate-800'
@@ -538,10 +637,17 @@ export const App: React.FC = () => {
             {activeTab === 'library' && (
               <button
                 onClick={handleOpenAddModal}
-                className="flex items-center gap-2 rounded-xl bg-indigo-600 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-indigo-600/25 hover:bg-indigo-500 transition-all hover:scale-[1.02] active:scale-[0.98]"
+                title={selectedMediaType === 'game' ? t('app.add_game') : t('app.add_film')}
+                className="flex items-center gap-1.5 rounded-xl bg-indigo-600 px-3 sm:px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-indigo-600/25 hover:bg-indigo-500 transition-all hover:scale-[1.02] active:scale-[0.98] cursor-pointer shrink-0"
               >
-                <Plus className="w-4 h-4" />
-                <span>{t('app.add_film')}</span>
+                {selectedMediaType === 'game' ? (
+                  <Gamepad2 className="w-4 h-4 shrink-0" />
+                ) : (
+                  <Plus className="w-4 h-4 shrink-0" />
+                )}
+                <span>
+                  {selectedMediaType === 'game' ? t('app.add_game') : t('app.add_film')}
+                </span>
               </button>
             )}
           </div>
@@ -576,11 +682,53 @@ export const App: React.FC = () => {
                       : 'border-slate-800/80 bg-slate-900/40'
                   }`}
                 >
-                  <div className="text-xs font-medium text-slate-500">
-                    {t('analytics.total_films')}: <span className="font-bold text-slate-800 dark:text-slate-200">{films.length}</span>
+                  {/* Media Type Tabs: All | Movies | Games */}
+                  <div className="flex items-center gap-1 p-1 rounded-xl bg-slate-100 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-800">
+                    <button
+                      onClick={() => handleSelectMediaType('all')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                        selectedMediaType === 'all'
+                          ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      <Layers className="w-3.5 h-3.5" />
+                      <span>{t('app.media_all')}</span>
+                    </button>
+                    <button
+                      onClick={() => handleSelectMediaType('movie')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                        selectedMediaType === 'movie'
+                          ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      <FilmIcon className="w-3.5 h-3.5" />
+                      <span>{t('app.media_movies')}</span>
+                    </button>
+                    <button
+                      onClick={() => handleSelectMediaType('game')}
+                      className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                        selectedMediaType === 'game'
+                          ? 'bg-white dark:bg-slate-800 text-indigo-600 dark:text-indigo-400 shadow-sm'
+                          : 'text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-white'
+                      }`}
+                    >
+                      <Gamepad2 className="w-3.5 h-3.5" />
+                      <span>{t('app.media_games')}</span>
+                    </button>
                   </div>
 
-                  <div className="flex items-center gap-3 ml-auto">
+                  <div className="text-xs font-medium text-slate-500">
+                    {selectedMediaType === 'game'
+                      ? t('analytics.total_games')
+                      : selectedMediaType === 'movie'
+                      ? t('analytics.total_films')
+                      : t('analytics.total_items')}
+                    : <span className="font-bold text-slate-800 dark:text-slate-200">{films.length}</span>
+                  </div>
+
+                  <div className="flex items-center gap-3">
                     <select
                       value={selectedCategory}
                       onChange={(e) => setSelectedCategory(e.target.value)}
@@ -590,8 +738,14 @@ export const App: React.FC = () => {
                           : 'border-slate-800 bg-slate-900 text-slate-300'
                       }`}
                     >
-                      <option value="all">{t('app.all_categories')}</option>
-                      {categories.map((c) => (
+                      <option value="all">
+                        {selectedMediaType === 'game'
+                          ? t('app.all_categories_games')
+                          : selectedMediaType === 'movie'
+                          ? t('app.all_categories_movies')
+                          : t('app.all_categories')}
+                      </option>
+                      {visibleCategories.map((c) => (
                         <option key={c} value={c}>
                           {c}
                         </option>
@@ -607,11 +761,11 @@ export const App: React.FC = () => {
                           : 'border-slate-800 bg-slate-900 text-slate-300'
                       }`}
                     >
-                      <option value="all">{t('status.all')}</option>
-                      <option value="want_to_watch">{t('status.want_to_watch')}</option>
-                      <option value="watching">{t('status.watching')}</option>
-                      <option value="watched">{t('status.watched')}</option>
-                      <option value="dropped">{t('status.dropped')}</option>
+                      {statusOptions.map((opt) => (
+                        <option key={opt.value} value={opt.value}>
+                          {opt.label}
+                        </option>
+                      ))}
                     </select>
                   </div>
                 </div>
@@ -633,9 +787,19 @@ export const App: React.FC = () => {
                           : 'border-slate-800 bg-slate-900/20'
                       }`}
                     >
-                      <FilmIcon className="w-12 h-12 text-slate-400 dark:text-slate-600 mb-3 stroke-1" />
+                      {selectedMediaType === 'game' ? (
+                        <Gamepad2 className="w-12 h-12 text-slate-400 dark:text-slate-600 mb-3 stroke-1" />
+                      ) : (
+                        <FilmIcon className="w-12 h-12 text-slate-400 dark:text-slate-600 mb-3 stroke-1" />
+                      )}
                       <h3 className="text-base font-semibold text-slate-700 dark:text-slate-300">{t('status.empty')}</h3>
-                      <p className="text-xs text-slate-500 mt-1 max-w-sm">{t('status.empty_desc')}</p>
+                      <p className="text-xs text-slate-500 mt-1 max-w-sm">
+                        {selectedMediaType === 'game'
+                          ? t('app.empty_games_desc')
+                          : selectedMediaType === 'movie'
+                          ? t('app.empty_movies_desc')
+                          : t('app.empty_all_desc')}
+                      </p>
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6">
@@ -678,6 +842,7 @@ export const App: React.FC = () => {
         isOpen={isModalOpen}
         filmToEdit={editingFilm}
         parentFilmForSeason={parentForSeason}
+        initialMediaType={selectedMediaType === 'game' ? 'game' : 'movie'}
         onClose={() => {
           setIsModalOpen(false);
           setParentForSeason(null);

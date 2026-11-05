@@ -1,5 +1,7 @@
 export type FilmStatus = 'want_to_watch' | 'watching' | 'watched' | 'dropped';
 
+export type MediaType = 'movie' | 'game';
+
 export type RelationKind = 'sequel' | 'prequel' | 'remake' | 'spin_off' | 'related';
 
 export interface Film {
@@ -23,6 +25,11 @@ export interface Film {
   watched_seasons: number[];
   quotes: string[];
   parent_id?: number | null;
+  media_type: MediaType;
+  platform?: string | null;
+  launcher?: string | null;
+  playtime_hours?: number | null;
+  completion_status?: string | null;
 }
 
 export interface NewFilm {
@@ -45,12 +52,20 @@ export interface NewFilm {
   watched_seasons: number[];
   quotes: string[];
   parent_id?: number | null;
+  media_type: MediaType;
+  platform?: string | null;
+  launcher?: string | null;
+  playtime_hours?: number | null;
+  completion_status?: string | null;
 }
 
 export interface FilmFilter {
   search: string;
   status: FilmStatus | null;
   category: string | null;
+  media_type?: MediaType | null;
+  platform?: string | null;
+  launcher?: string | null;
 }
 
 export interface DashboardStats {
@@ -65,6 +80,12 @@ export interface DashboardStats {
   top_directors: [string, number][];
   total_seasons: number;
   watched_seasons: number;
+  total_games: number;
+  completed_games: number;
+  in_progress_games?: number;
+  dropped_games?: number;
+  total_playtime_hours: number;
+  top_platforms: [string, number][];
 }
 
 export interface RelatedFilm {

@@ -18,7 +18,7 @@ use zip::write::SimpleFileOptions;
 
 use crate::db::Database;
 use crate::error::{AppError, AppResult};
-use crate::models::{Film, FilmRelation, FilmScreenshot, NewFilm};
+use crate::models::{Film, FilmRelation, FilmScreenshot, MediaType, NewFilm};
 use crate::storage::{self, AppPaths};
 
 const BUNDLE_VERSION: u32 = 1;
@@ -180,10 +180,10 @@ pub fn import_library(
     }
 
     let existing_films = db.list_all_films()?;
-    // (id, название, год, imdb_id) — для поиска дублей.
-    let mut known: Vec<(i64, String, Option<u16>, String)> = existing_films
+    // (id, название, год, imdb_id, media_type) — для поиска дублей.
+    let mut known: Vec<(i64, String, Option<u16>, String, MediaType)> = existing_films
         .iter()
-        .map(|film| (film.id, film.title.clone(), film.year, film.imdb_id.clone()))
+        .map(|film| (film.id, film.title.clone(), film.year, film.imdb_id.clone(), film.media_type))
         .collect();
     let existing_ids: Vec<i64> = existing_films.iter().map(|film| film.id).collect();
 
@@ -194,8 +194,10 @@ pub fn import_library(
     for film in &bundle.films {
         if let Some(existing_id) = known
             .iter()
-            .find(|(_, title, year, imdb_id)| is_duplicate(film, title, *year, imdb_id))
-            .map(|(id, _, _, _)| *id)
+            .find(|(_, title, year, imdb_id, media_type)| {
+                is_duplicate(film, title, *year, imdb_id, *media_type)
+            })
+            .map(|(id, _, _, _, _)| *id)
         {
             id_map.insert(film.id, existing_id);
             summary.skipped += 1;
@@ -229,6 +231,7 @@ pub fn import_library(
                     draft.title.clone(),
                     draft.year,
                     draft.imdb_id.clone(),
+                    draft.media_type,
                 ));
                 summary.added += 1;
                 if imported_poster.is_some() {
@@ -316,6 +319,11 @@ fn draft_from_export(film: &Film, poster_path: Option<String>) -> NewFilm {
         watched_seasons: film.watched_seasons.clone(),
         quotes: film.quotes.clone(),
         parent_id: film.parent_id,
+        media_type: film.media_type,
+        platform: film.platform.clone(),
+        launcher: film.launcher.clone(),
+        playtime_hours: film.playtime_hours,
+        completion_status: film.completion_status.clone(),
     }
 }
 
@@ -324,7 +332,11 @@ fn is_duplicate(
     existing_title: &str,
     existing_year: Option<u16>,
     existing_imdb_id: &str,
+    existing_media_type: MediaType,
 ) -> bool {
+    if imported.media_type != existing_media_type {
+        return false;
+    }
     let same_imdb = !imported.imdb_id.trim().is_empty()
         && imported.imdb_id.trim().to_lowercase() == existing_imdb_id.trim().to_lowercase();
     // to_lowercase, а не eq_ignore_ascii_case: названия бывают кириллическими.
@@ -402,6 +414,7 @@ pub fn export_to_csv(films: &[Film], target: &Path) -> AppResult<()> {
 
     writer.write_record([
         "ID",
+        "Тип медиа",
         "Название",
         "Оригинальное название",
         "Категория",
@@ -419,6 +432,10 @@ pub fn export_to_csv(films: &[Film], target: &Path) -> AppResult<()> {
         "Цитаты",
         "Описание",
         "Мысли",
+        "Платформа",
+        "Лаунчер",
+        "Время в игре (ч)",
+        "Статус прохождения",
     ])?;
 
     for film in films {
@@ -431,6 +448,7 @@ pub fn export_to_csv(films: &[Film], target: &Path) -> AppResult<()> {
 
         writer.write_record(&[
             film.id.to_string(),
+            film.media_type.label().to_owned(),
             film.title.clone(),
             film.original_title.clone(),
             film.category.clone(),
@@ -450,6 +468,10 @@ pub fn export_to_csv(films: &[Film], target: &Path) -> AppResult<()> {
             film.quotes.join(" | "),
             film.description.clone(),
             film.thoughts.clone(),
+            film.platform.clone().unwrap_or_default(),
+            film.launcher.clone().unwrap_or_default(),
+            film.playtime_hours.map(|h| h.to_string()).unwrap_or_default(),
+            film.completion_status.clone().unwrap_or_default(),
         ])?;
     }
 
@@ -457,12 +479,12 @@ pub fn export_to_csv(films: &[Film], target: &Path) -> AppResult<()> {
     Ok(())
 }
 
-/// Экспорт фильмографии в красивый Markdown-файл.
+/// Экспорт фильмографии и каталога игр в красивый Markdown-файл.
 pub fn export_to_markdown(films: &[Film], target: &Path) -> AppResult<()> {
     use std::fmt::Write as _;
 
     let mut content = String::new();
-    let _ = writeln!(content, "# Моя фильмотека\n");
+    let _ = writeln!(content, "# Моя медиатека\n");
     let _ = writeln!(
         content,
         "*Экспортировано записей: {}*\n\n---\n",
@@ -488,14 +510,41 @@ pub fn export_to_markdown(films: &[Film], target: &Path) -> AppResult<()> {
 
         let _ = writeln!(
             content,
-            "**Категория:** {} | **Статус:** {} | **Оценка:** {}\n",
+            "**Тип:** {} | **Категория:** {} | **Статус:** {} | **Оценка:** {}\n",
+            film.media_type.label(),
             film.category,
             film.status.label(),
             rating_str
         );
 
-        if !film.director.is_empty() {
-            let _ = writeln!(content, "**Режиссёр:** {}\n", film.director);
+        if film.media_type == MediaType::Game {
+            if let Some(ref platform) = film.platform {
+                let _ = writeln!(content, "**Платформа:** {}\n", platform);
+            }
+            if let Some(ref launcher) = film.launcher {
+                let _ = writeln!(content, "**Лаунчер:** {}\n", launcher);
+            }
+            if let Some(hours) = film.playtime_hours {
+                let _ = writeln!(content, "**Время в игре:** {hours} ч.\n");
+            }
+            if let Some(ref status) = film.completion_status {
+                let _ = writeln!(content, "**Статус прохождения:** {}\n", status);
+            }
+        } else {
+            if !film.director.is_empty() {
+                let _ = writeln!(content, "**Режиссёр:** {}\n", film.director);
+            }
+            if let Some(runtime) = film.runtime_minutes {
+                let _ = writeln!(content, "**Длительность:** {runtime} мин.\n");
+            }
+            if film.has_seasons() {
+                let _ = writeln!(
+                    content,
+                    "**Сезоны:** просмотрено {} из {}\n",
+                    film.watched_season_count(),
+                    film.seasons_total
+                );
+            }
         }
         if !film.genres.is_empty() {
             let _ = writeln!(content, "**Жанры:** {}\n", film.genres);
@@ -728,11 +777,17 @@ mod tests {
             watched_seasons: Vec::new(),
             quotes: Vec::new(),
             parent_id: None,
+            media_type: MediaType::Movie,
+            platform: None,
+            launcher: None,
+            playtime_hours: None,
+            completion_status: None,
         };
 
-        assert!(is_duplicate(&film, "дюна", Some(2021), ""));
-        assert!(is_duplicate(&film, "другое", Some(1999), "tt1160419"));
-        assert!(!is_duplicate(&film, "Дюна", Some(1984), ""));
+        assert!(is_duplicate(&film, "дюна", Some(2021), "", MediaType::Movie));
+        assert!(is_duplicate(&film, "другое", Some(1999), "tt1160419", MediaType::Movie));
+        assert!(!is_duplicate(&film, "Дюна", Some(1984), "", MediaType::Movie));
+        assert!(!is_duplicate(&film, "дюна", Some(2021), "", MediaType::Game));
     }
 
     #[test]
@@ -763,6 +818,11 @@ mod tests {
             watched_seasons: Vec::new(),
             quotes: vec!["Ложки нет.".to_owned()],
             parent_id: None,
+            media_type: MediaType::Movie,
+            platform: None,
+            launcher: None,
+            playtime_hours: None,
+            completion_status: None,
         };
 
         export_to_csv(std::slice::from_ref(&film), &csv_path).unwrap();
@@ -772,11 +832,12 @@ mod tests {
         let csv_str = String::from_utf8_lossy(&csv_content);
         assert!(csv_str.contains("Матрица"));
         assert!(csv_str.contains("Ложки нет."));
+        assert!(csv_str.contains("Тип медиа"));
 
         export_to_markdown(&[film], &md_path).unwrap();
         assert!(md_path.exists());
         let md_str = fs::read_to_string(&md_path).unwrap();
-        assert!(md_str.contains("# Моя фильмотека"));
+        assert!(md_str.contains("# Моя медиатека"));
         assert!(md_str.contains("## Матрица (1999)"));
         assert!(md_str.contains("> Ложки нет."));
 

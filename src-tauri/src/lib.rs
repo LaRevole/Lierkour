@@ -1,7 +1,7 @@
 mod commands;
 
 use commands::*;
-use myfilmlibrary_core::{AppPaths, Database};
+use lierkour_core::{AppPaths, Database};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -16,7 +16,8 @@ pub fn run() {
             // Windows and `run-portable.sh` on Linux) point this variable at
             // the `data` folder next to the executable. Otherwise use the
             // platform's per-user application data directory.
-            let data_dir = std::env::var_os(myfilmlibrary_core::storage::DATA_DIR_ENV)
+            let data_dir = std::env::var_os(lierkour_core::storage::DATA_DIR_ENV)
+                .or_else(|| std::env::var_os(lierkour_core::storage::LEGACY_DATA_DIR_ENV))
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
                 .unwrap_or_else(|| {
@@ -27,30 +28,31 @@ pub fn run() {
 
             let paths = AppPaths::from_data_dir(data_dir).expect("Failed to initialize app paths");
 
-            // Seamless migration from legacy directory (v1.0/v1.1 ~/.local/share/MyFilmLibrary)
-            if !paths.db_path.exists()
-                && let Ok(legacy) = AppPaths::discover()
-                && legacy.db_path.exists()
-                && legacy.db_path != paths.db_path
-            {
-                let _ = fs::copy(&legacy.db_path, &paths.db_path);
-                if legacy.posters_dir.exists()
-                    && let Ok(entries) = fs::read_dir(&legacy.posters_dir)
+            // Seamless migration from legacy directory (v1.0/v1.1 MyFilmLibrary)
+            if !paths.db_path.exists() {
+                if let Ok(legacy) = AppPaths::discover()
+                    && legacy.db_path.exists()
+                    && legacy.db_path != paths.db_path
                 {
-                    for entry in entries.flatten() {
-                        let dest = paths.posters_dir.join(entry.file_name());
-                        if !dest.exists() {
-                            let _ = fs::copy(entry.path(), dest);
+                    let _ = fs::copy(&legacy.db_path, &paths.db_path);
+                    if legacy.posters_dir.exists()
+                        && let Ok(entries) = fs::read_dir(&legacy.posters_dir)
+                    {
+                        for entry in entries.flatten() {
+                            let dest = paths.posters_dir.join(entry.file_name());
+                            if !dest.exists() {
+                                let _ = fs::copy(entry.path(), dest);
+                            }
                         }
                     }
-                }
-                if legacy.screenshots_dir.exists()
-                    && let Ok(entries) = fs::read_dir(&legacy.screenshots_dir)
-                {
-                    for entry in entries.flatten() {
-                        let dest = paths.screenshots_dir.join(entry.file_name());
-                        if !dest.exists() {
-                            let _ = fs::copy(entry.path(), dest);
+                    if legacy.screenshots_dir.exists()
+                        && let Ok(entries) = fs::read_dir(&legacy.screenshots_dir)
+                    {
+                        for entry in entries.flatten() {
+                            let dest = paths.screenshots_dir.join(entry.file_name());
+                            if !dest.exists() {
+                                let _ = fs::copy(entry.path(), dest);
+                            }
                         }
                     }
                 }

@@ -14,7 +14,7 @@ use rusqlite::{Connection, OptionalExtension, Row, params};
 use crate::error::{AppError, AppResult};
 use crate::models::{
     AppTheme, DEFAULT_CATEGORIES, DashboardStats, Film, FilmFilter, FilmRelation, FilmScreenshot,
-    FilmStatus, NewFilm, RelatedFilm, RelationKind, parse_quotes, parse_watched_seasons,
+    FilmStatus, MediaType, NewFilm, RelatedFilm, RelationKind, parse_quotes, parse_watched_seasons,
     split_comma_list,
 };
 
@@ -36,6 +36,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
         include_str!("../migrations/006_screenshots_and_quotes.sql"),
     ),
     (7, include_str!("../migrations/007_seasons_hierarchy.sql")),
+    (8, include_str!("../migrations/008_games.sql")),
 ];
 
 pub struct Database {
@@ -103,7 +104,8 @@ impl Database {
         let mut statement = self.conn.prepare(
             "SELECT id, title, original_title, category, director, year, genres, country,
                     runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
-                    poster_path, seasons_total, watched_seasons, quotes, parent_id
+                    poster_path, seasons_total, watched_seasons, quotes, parent_id,
+                    media_type, platform, launcher, playtime_hours, completion_status
              FROM films
              WHERE parent_id = ?1
              ORDER BY year ASC, id ASC",
@@ -122,11 +124,15 @@ impl Database {
         let mut statement = self.conn.prepare(
             "SELECT id, title, original_title, category, director, year, genres, country,
                     runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
-                    poster_path, seasons_total, watched_seasons, quotes, parent_id
+                    poster_path, seasons_total, watched_seasons, quotes, parent_id,
+                    media_type, platform, launcher, playtime_hours, completion_status
              FROM films
              WHERE parent_id IS NULL
                AND (?1 IS NULL OR status = ?1)
                AND (?2 IS NULL OR category = ?2)
+               AND (?3 IS NULL OR media_type = ?3)
+               AND (?4 IS NULL OR platform = ?4)
+               AND (?5 IS NULL OR launcher = ?5)
              ORDER BY sort_order ASC, updated_at DESC, id DESC",
         )?;
 
@@ -134,6 +140,9 @@ impl Database {
             params![
                 filter.status.map(FilmStatus::as_db_str),
                 filter.category.as_deref(),
+                filter.media_type.map(MediaType::as_db_str),
+                filter.platform.as_deref(),
+                filter.launcher.as_deref(),
             ],
             film_from_row,
         )?;
@@ -150,6 +159,9 @@ impl Database {
                     || film.country.to_lowercase().contains(&needle)
                     || film.imdb_id.to_lowercase().contains(&needle)
                     || film.tags.to_lowercase().contains(&needle)
+                    || film.platform.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                    || film.launcher.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                    || film.completion_status.as_deref().unwrap_or("").to_lowercase().contains(&needle)
                     || film
                         .year
                         .is_some_and(|year| year.to_string().contains(&needle))
@@ -175,10 +187,14 @@ impl Database {
         let mut statement = self.conn.prepare(
             "SELECT id, title, original_title, category, director, year, genres, country,
                     runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
-                    poster_path, seasons_total, watched_seasons, quotes, parent_id
+                    poster_path, seasons_total, watched_seasons, quotes, parent_id,
+                    media_type, platform, launcher, playtime_hours, completion_status
              FROM films
              WHERE (?1 IS NULL OR status = ?1)
                AND (?2 IS NULL OR category = ?2)
+               AND (?3 IS NULL OR media_type = ?3)
+               AND (?4 IS NULL OR platform = ?4)
+               AND (?5 IS NULL OR launcher = ?5)
              ORDER BY sort_order ASC, updated_at DESC, id DESC",
         )?;
 
@@ -186,6 +202,9 @@ impl Database {
             params![
                 filter.status.map(FilmStatus::as_db_str),
                 filter.category.as_deref(),
+                filter.media_type.map(MediaType::as_db_str),
+                filter.platform.as_deref(),
+                filter.launcher.as_deref(),
             ],
             film_from_row,
         )?;
@@ -202,6 +221,9 @@ impl Database {
                     || film.country.to_lowercase().contains(&needle)
                     || film.imdb_id.to_lowercase().contains(&needle)
                     || film.tags.to_lowercase().contains(&needle)
+                    || film.platform.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                    || film.launcher.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                    || film.completion_status.as_deref().unwrap_or("").to_lowercase().contains(&needle)
                     || film
                         .year
                         .is_some_and(|year| year.to_string().contains(&needle))
@@ -221,7 +243,8 @@ impl Database {
             .query_row(
                 "SELECT id, title, original_title, category, director, year, genres, country,
                         runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
-                        poster_path, seasons_total, watched_seasons, quotes, parent_id
+                        poster_path, seasons_total, watched_seasons, quotes, parent_id,
+                        media_type, platform, launcher, playtime_hours, completion_status
                  FROM films WHERE id = ?1",
                 [id],
                 film_from_row,
@@ -257,7 +280,7 @@ impl Database {
         Ok(categories)
     }
 
-    /// Вставляет фильм и возвращает его новый `id`.
+    /// Вставляет фильм или игру и возвращает его новый `id`.
     pub fn insert_film(&mut self, draft: &NewFilm) -> AppResult<i64> {
         draft.validate()?;
 
@@ -265,10 +288,13 @@ impl Database {
             "INSERT INTO films (
                  title, original_title, category, director, year, genres, country,
                  runtime_minutes, imdb_id, tags, status, rating, description, thoughts,
-                 poster_path, seasons_total, watched_seasons, quotes, parent_id, sort_order
+                 poster_path, seasons_total, watched_seasons, quotes, parent_id,
+                 media_type, platform, launcher, playtime_hours, completion_status,
+                 sort_order
              )
              VALUES (
                  ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+                 ?20, ?21, ?22, ?23, ?24,
                  (SELECT COALESCE(MIN(sort_order), 0) - 1 FROM films)
              )",
             params![
@@ -291,6 +317,11 @@ impl Database {
                 draft.watched_seasons_db(),
                 draft.quotes_db(),
                 draft.parent_id,
+                draft.media_type.as_db_str(),
+                draft.platform.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                draft.launcher.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                draft.playtime_hours,
+                draft.completion_status.as_deref().map(str::trim).filter(|s| !s.is_empty()),
             ],
         )?;
 
@@ -321,6 +352,11 @@ impl Database {
                  watched_seasons = ?18,
                  quotes = ?19,
                  parent_id = ?20,
+                 media_type = ?21,
+                 platform = ?22,
+                 launcher = ?23,
+                 playtime_hours = ?24,
+                 completion_status = ?25,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now')
              WHERE id = ?1",
             params![
@@ -344,6 +380,11 @@ impl Database {
                 draft.watched_seasons_db(),
                 draft.quotes_db(),
                 draft.parent_id,
+                draft.media_type.as_db_str(),
+                draft.platform.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                draft.launcher.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                draft.playtime_hours,
+                draft.completion_status.as_deref().map(str::trim).filter(|s| !s.is_empty()),
             ],
         )?;
 
@@ -458,7 +499,8 @@ impl Database {
                     f.id, f.title, f.original_title, f.category, f.director, f.year,
                     f.genres, f.country, f.runtime_minutes, f.imdb_id, f.tags, f.status, f.rating,
                     f.description, f.thoughts, f.poster_path, f.seasons_total,
-                    f.watched_seasons, f.quotes
+                    f.watched_seasons, f.quotes, f.parent_id,
+                    f.media_type, f.platform, f.launcher, f.playtime_hours, f.completion_status
              FROM film_relations r
              JOIN films f
                ON f.id = CASE WHEN r.source_id = ?1 THEN r.target_id ELSE r.source_id END
@@ -638,31 +680,31 @@ impl Database {
 
     pub fn get_dashboard_stats(&self) -> AppResult<DashboardStats> {
         let total_films: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE parent_id IS NULL",
+            "SELECT COUNT(*) FROM films WHERE parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
             [],
             |r| r.get(0),
         )?;
 
         let watched_films: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE status = 'watched' AND parent_id IS NULL",
+            "SELECT COUNT(*) FROM films WHERE status = 'watched' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
             [],
             |r| r.get(0),
         )?;
 
         let want_to_watch: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE status = 'want_to_watch' AND parent_id IS NULL",
+            "SELECT COUNT(*) FROM films WHERE status = 'want_to_watch' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
             [],
             |r| r.get(0),
         )?;
 
         let watching: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE status = 'watching' AND parent_id IS NULL",
+            "SELECT COUNT(*) FROM films WHERE status = 'watching' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
             [],
             |r| r.get(0),
         )?;
 
         let dropped: i64 = self.conn.query_row(
-            "SELECT COUNT(*) FROM films WHERE status = 'dropped' AND parent_id IS NULL",
+            "SELECT COUNT(*) FROM films WHERE status = 'dropped' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
             [],
             |r| r.get(0),
         )?;
@@ -670,7 +712,7 @@ impl Database {
         let average_rating: Option<f64> = self
             .conn
             .query_row(
-                "SELECT AVG(rating) FROM films WHERE rating IS NOT NULL AND parent_id IS NULL",
+                "SELECT AVG(rating) FROM films WHERE rating IS NOT NULL AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)",
                 [],
                 |r| r.get(0),
             )
@@ -680,16 +722,16 @@ impl Database {
         let total_runtime_minutes: i64 = self
             .conn
             .query_row(
-                "SELECT COALESCE(SUM(runtime_minutes), 0) FROM films WHERE status = 'watched' AND runtime_minutes IS NOT NULL",
+                "SELECT COALESCE(SUM(runtime_minutes), 0) FROM films WHERE status = 'watched' AND runtime_minutes IS NOT NULL AND (media_type = 'movie' OR media_type IS NULL)",
                 [],
                 |r| r.get(0),
             )?;
 
-        // Топ жанров (только основные тайтлы)
+        // Топ жанров (только основные тайтлы фильмов)
         let mut genre_counts = std::collections::HashMap::<String, usize>::new();
         let mut stmt = self
             .conn
-            .prepare("SELECT genres FROM films WHERE genres != '' AND parent_id IS NULL")?;
+            .prepare("SELECT genres FROM films WHERE genres != '' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         for g_str in rows.flatten() {
             for genre in split_comma_list(&g_str) {
@@ -700,11 +742,11 @@ impl Database {
         top_genres.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
         top_genres.truncate(5);
 
-        // Топ режиссёров (только основные тайтлы)
+        // Топ режиссёров (только основные тайтлы фильмов)
         let mut director_counts = std::collections::HashMap::<String, usize>::new();
         let mut stmt = self
             .conn
-            .prepare("SELECT director FROM films WHERE director != '' AND parent_id IS NULL")?;
+            .prepare("SELECT director FROM films WHERE director != '' AND parent_id IS NULL AND (media_type = 'movie' OR media_type IS NULL)")?;
         let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
         for d in rows.flatten() {
             let trimmed = d.trim();
@@ -765,6 +807,63 @@ impl Database {
         let total_seasons = (child_seasons_total.max(0) as usize) + legacy_total;
         let watched_seasons = (child_seasons_watched.max(0) as usize) + legacy_watched;
 
+        // --- Статистика по играм (Games Analytics) ---
+        let total_games: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM films WHERE media_type = 'game'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let completed_games: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND (
+                completion_status IN ('Пройдена', '100% достижений', 'completed', 'completed_100')
+                OR status = 'watched'
+            )",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let in_progress_games: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND (
+                completion_status IN ('В процессе', 'in_progress')
+                OR status = 'watching'
+            )",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let dropped_games: i64 = self.conn.query_row(
+            "SELECT COUNT(*) FROM films WHERE media_type = 'game' AND (
+                completion_status IN ('Брошена', 'dropped')
+                OR status = 'dropped'
+            )",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let total_playtime_hours: i64 = self.conn.query_row(
+            "SELECT COALESCE(SUM(playtime_hours), 0) FROM films WHERE media_type = 'game'",
+            [],
+            |r| r.get(0),
+        )?;
+
+        let mut top_platforms = Vec::new();
+        let mut platform_stmt = self.conn.prepare(
+            "SELECT platform, COUNT(*) as c FROM films
+             WHERE media_type = 'game' AND platform IS NOT NULL AND trim(platform) != ''
+             GROUP BY platform
+             ORDER BY c DESC, platform ASC
+             LIMIT 5",
+        )?;
+        let p_rows = platform_stmt.query_map([], |r| {
+            let p: String = r.get(0)?;
+            let c: i64 = r.get(1)?;
+            Ok((p, c.max(0) as usize))
+        })?;
+        for p in p_rows.flatten() {
+            top_platforms.push(p);
+        }
+
         Ok(DashboardStats {
             total_films: total_films.max(0) as usize,
             watched_films: watched_films.max(0) as usize,
@@ -777,6 +876,13 @@ impl Database {
             top_directors,
             total_seasons,
             watched_seasons,
+
+            total_games: total_games.max(0) as usize,
+            completed_games: completed_games.max(0) as usize,
+            in_progress_games: in_progress_games.max(0) as usize,
+            dropped_games: dropped_games.max(0) as usize,
+            total_playtime_hours: total_playtime_hours.max(0) as u64,
+            top_platforms,
         })
     }
 }
@@ -786,6 +892,17 @@ fn film_from_row(row: &Row<'_>) -> rusqlite::Result<Film> {
     let watched_seasons: String = row.get("watched_seasons")?;
     let quotes_str: String = row.get::<_, Option<String>>("quotes")?.unwrap_or_default();
     let parent_id: Option<i64> = row.get("parent_id").unwrap_or(None);
+
+    let media_type_str: Option<String> = row.get("media_type").unwrap_or(None);
+    let media_type = media_type_str
+        .as_deref()
+        .and_then(MediaType::from_db_str)
+        .unwrap_or(MediaType::Movie);
+
+    let platform: Option<String> = row.get("platform").unwrap_or(None);
+    let launcher: Option<String> = row.get("launcher").unwrap_or(None);
+    let playtime_hours: Option<u32> = row.get("playtime_hours").unwrap_or(None);
+    let completion_status: Option<String> = row.get("completion_status").unwrap_or(None);
 
     Ok(Film {
         id: row.get("id")?,
@@ -808,6 +925,11 @@ fn film_from_row(row: &Row<'_>) -> rusqlite::Result<Film> {
         watched_seasons: parse_watched_seasons(&watched_seasons, seasons_total),
         quotes: parse_quotes(&quotes_str),
         parent_id,
+        media_type,
+        platform,
+        launcher,
+        playtime_hours,
+        completion_status,
     })
 }
 
@@ -820,6 +942,19 @@ impl FromSql for FilmStatus {
 }
 
 impl ToSql for FilmStatus {
+    fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
+        Ok(ToSqlOutput::from(self.as_db_str()))
+    }
+}
+
+impl FromSql for MediaType {
+    fn column_result(value: ValueRef<'_>) -> FromSqlResult<Self> {
+        let value = value.as_str()?;
+        MediaType::from_db_str(value).ok_or(FromSqlError::InvalidType)
+    }
+}
+
+impl ToSql for MediaType {
     fn to_sql(&self) -> rusqlite::Result<ToSqlOutput<'_>> {
         Ok(ToSqlOutput::from(self.as_db_str()))
     }
@@ -923,8 +1058,7 @@ mod tests {
         let by_director = db
             .list_films(&FilmFilter {
                 search: "вильнёв".to_owned(),
-                status: None,
-                category: None,
+                ..FilmFilter::default()
             })
             .unwrap();
         assert_eq!(by_director.len(), 1);
@@ -933,8 +1067,7 @@ mod tests {
         let by_original = db
             .list_films(&FilmFilter {
                 search: "arrival".to_owned(),
-                status: None,
-                category: None,
+                ..FilmFilter::default()
             })
             .unwrap();
         assert_eq!(by_original.len(), 2);
@@ -943,8 +1076,7 @@ mod tests {
             let found = db
                 .list_films(&FilmFilter {
                     search: query.to_owned(),
-                    status: None,
-                    category: None,
+                    ..FilmFilter::default()
                 })
                 .unwrap();
             assert_eq!(found.len(), 1, "поиск по «{query}»");
@@ -953,9 +1085,8 @@ mod tests {
 
         let by_status = db
             .list_films(&FilmFilter {
-                search: String::new(),
                 status: Some(FilmStatus::Watched),
-                category: None,
+                ..FilmFilter::default()
             })
             .unwrap();
         assert_eq!(by_status.len(), 2);
@@ -964,8 +1095,7 @@ mod tests {
         let by_search = db
             .list_films(&FilmFilter {
                 search: "дюна".to_owned(),
-                status: None,
-                category: None,
+                ..FilmFilter::default()
             })
             .unwrap();
         assert_eq!(by_search.len(), 2);
@@ -986,9 +1116,8 @@ mod tests {
 
         let by_category = db
             .list_films(&FilmFilter {
-                search: String::new(),
-                status: None,
                 category: Some("Аниме".to_owned()),
+                ..FilmFilter::default()
             })
             .unwrap();
         assert_eq!(by_category.len(), 1);
@@ -1041,6 +1170,11 @@ mod tests {
         assert_eq!(films[0].runtime_minutes, None);
         assert_eq!(films[0].imdb_id, "");
         assert_eq!(films[0].tags, "");
+        assert_eq!(films[0].media_type, MediaType::Movie);
+        assert_eq!(films[0].platform, None);
+        assert_eq!(films[0].launcher, None);
+        assert_eq!(films[0].playtime_hours, None);
+        assert_eq!(films[0].completion_status, None);
     }
 
     #[test]
@@ -1309,5 +1443,87 @@ mod tests {
         assert_eq!(stats_with_season.watched_films, 2);
         assert_eq!(stats_with_season.total_seasons, 1);
         assert_eq!(stats_with_season.watched_seasons, 1);
+    }
+
+    #[test]
+    fn games_crud_filtering_and_analytics() {
+        let mut db = test_db();
+
+        let movie = draft("Начало", FilmStatus::Watched);
+        db.insert_film(&movie).unwrap();
+
+        let game1 = NewFilm {
+            title: "Cyberpunk 2077".to_owned(),
+            category: "Игры".to_owned(),
+            media_type: MediaType::Game,
+            platform: Some("ПК".to_owned()),
+            launcher: Some("Steam".to_owned()),
+            playtime_hours: Some(85),
+            completion_status: Some("Пройдена".to_owned()),
+            status: FilmStatus::Watched,
+            rating: Some(9),
+            ..NewFilm::default()
+        };
+        let g1_id = db.insert_film(&game1).unwrap();
+
+        let game2 = NewFilm {
+            title: "The Legend of Zelda".to_owned(),
+            category: "Игры".to_owned(),
+            media_type: MediaType::Game,
+            platform: Some("Switch".to_owned()),
+            launcher: Some("Standalone".to_owned()),
+            playtime_hours: Some(40),
+            completion_status: Some("В процессе".to_owned()),
+            status: FilmStatus::Watching,
+            rating: Some(10),
+            ..NewFilm::default()
+        };
+        db.insert_film(&game2).unwrap();
+
+        // Проверяем фильтрацию по media_type
+        let movies_only = db.list_root_films(&FilmFilter {
+            media_type: Some(MediaType::Movie),
+            ..FilmFilter::default()
+        }).unwrap();
+        assert_eq!(movies_only.len(), 1);
+        assert_eq!(movies_only[0].title, "Начало");
+
+        let games_only = db.list_root_films(&FilmFilter {
+            media_type: Some(MediaType::Game),
+            ..FilmFilter::default()
+        }).unwrap();
+        assert_eq!(games_only.len(), 2);
+
+        // Поиск по лаунчеру и платформе
+        let steam_search = db.list_root_films(&FilmFilter {
+            search: "steam".to_owned(),
+            ..FilmFilter::default()
+        }).unwrap();
+        assert_eq!(steam_search.len(), 1);
+        assert_eq!(steam_search[0].title, "Cyberpunk 2077");
+
+        let switch_search = db.list_root_films(&FilmFilter {
+            search: "switch".to_owned(),
+            ..FilmFilter::default()
+        }).unwrap();
+        assert_eq!(switch_search.len(), 1);
+        assert_eq!(switch_search[0].title, "The Legend of Zelda");
+
+        // get_film для игры
+        let loaded = db.get_film(g1_id).unwrap();
+        assert_eq!(loaded.media_type, MediaType::Game);
+        assert_eq!(loaded.platform.as_deref(), Some("ПК"));
+        assert_eq!(loaded.launcher.as_deref(), Some("Steam"));
+        assert_eq!(loaded.playtime_hours, Some(85));
+        assert_eq!(loaded.completion_status.as_deref(), Some("Пройдена"));
+
+        // Игровая аналитика
+        let stats = db.get_dashboard_stats().unwrap();
+        assert_eq!(stats.total_films, 1);
+        assert_eq!(stats.total_games, 2);
+        assert_eq!(stats.completed_games, 1);
+        assert_eq!(stats.in_progress_games, 1);
+        assert_eq!(stats.total_playtime_hours, 125);
+        assert_eq!(stats.top_platforms.len(), 2);
     }
 }

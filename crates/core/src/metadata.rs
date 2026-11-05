@@ -89,7 +89,7 @@ pub fn fetch(
 fn build_agent() -> ureq::Agent {
     ureq::Agent::config_builder()
         .timeout_global(Some(Duration::from_secs(20)))
-        .user_agent("MyFilmLibrary/0.1 (local desktop app)")
+        .user_agent("Lierkour/2.0 (local desktop app)")
         .build()
         .into()
 }
