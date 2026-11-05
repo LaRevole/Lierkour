@@ -29,30 +29,29 @@ pub fn run() {
             let paths = AppPaths::from_data_dir(data_dir).expect("Failed to initialize app paths");
 
             // Seamless migration from legacy directory (v1.0/v1.1 MyFilmLibrary)
-            if !paths.db_path.exists() {
-                if let Ok(legacy) = AppPaths::discover()
-                    && legacy.db_path.exists()
-                    && legacy.db_path != paths.db_path
+            if !paths.db_path.exists()
+                && let Ok(legacy) = AppPaths::discover()
+                && legacy.db_path.exists()
+                && legacy.db_path != paths.db_path
+            {
+                let _ = fs::copy(&legacy.db_path, &paths.db_path);
+                if legacy.posters_dir.exists()
+                    && let Ok(entries) = fs::read_dir(&legacy.posters_dir)
                 {
-                    let _ = fs::copy(&legacy.db_path, &paths.db_path);
-                    if legacy.posters_dir.exists()
-                        && let Ok(entries) = fs::read_dir(&legacy.posters_dir)
-                    {
-                        for entry in entries.flatten() {
-                            let dest = paths.posters_dir.join(entry.file_name());
-                            if !dest.exists() {
-                                let _ = fs::copy(entry.path(), dest);
-                            }
+                    for entry in entries.flatten() {
+                        let dest = paths.posters_dir.join(entry.file_name());
+                        if !dest.exists() {
+                            let _ = fs::copy(entry.path(), dest);
                         }
                     }
-                    if legacy.screenshots_dir.exists()
-                        && let Ok(entries) = fs::read_dir(&legacy.screenshots_dir)
-                    {
-                        for entry in entries.flatten() {
-                            let dest = paths.screenshots_dir.join(entry.file_name());
-                            if !dest.exists() {
-                                let _ = fs::copy(entry.path(), dest);
-                            }
+                }
+                if legacy.screenshots_dir.exists()
+                    && let Ok(entries) = fs::read_dir(&legacy.screenshots_dir)
+                {
+                    for entry in entries.flatten() {
+                        let dest = paths.screenshots_dir.join(entry.file_name());
+                        if !dest.exists() {
+                            let _ = fs::copy(entry.path(), dest);
                         }
                     }
                 }

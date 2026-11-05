@@ -159,9 +159,24 @@ impl Database {
                     || film.country.to_lowercase().contains(&needle)
                     || film.imdb_id.to_lowercase().contains(&needle)
                     || film.tags.to_lowercase().contains(&needle)
-                    || film.platform.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                    || film.launcher.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                    || film.completion_status.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                    || film
+                        .platform
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&needle)
+                    || film
+                        .launcher
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&needle)
+                    || film
+                        .completion_status
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&needle)
                     || film
                         .year
                         .is_some_and(|year| year.to_string().contains(&needle))
@@ -221,9 +236,24 @@ impl Database {
                     || film.country.to_lowercase().contains(&needle)
                     || film.imdb_id.to_lowercase().contains(&needle)
                     || film.tags.to_lowercase().contains(&needle)
-                    || film.platform.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                    || film.launcher.as_deref().unwrap_or("").to_lowercase().contains(&needle)
-                    || film.completion_status.as_deref().unwrap_or("").to_lowercase().contains(&needle)
+                    || film
+                        .platform
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&needle)
+                    || film
+                        .launcher
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&needle)
+                    || film
+                        .completion_status
+                        .as_deref()
+                        .unwrap_or("")
+                        .to_lowercase()
+                        .contains(&needle)
                     || film
                         .year
                         .is_some_and(|year| year.to_string().contains(&needle))
@@ -381,10 +411,22 @@ impl Database {
                 draft.quotes_db(),
                 draft.parent_id,
                 draft.media_type.as_db_str(),
-                draft.platform.as_deref().map(str::trim).filter(|s| !s.is_empty()),
-                draft.launcher.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                draft
+                    .platform
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty()),
+                draft
+                    .launcher
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty()),
                 draft.playtime_hours,
-                draft.completion_status.as_deref().map(str::trim).filter(|s| !s.is_empty()),
+                draft
+                    .completion_status
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty()),
             ],
         )?;
 
@@ -1481,31 +1523,39 @@ mod tests {
         db.insert_film(&game2).unwrap();
 
         // Проверяем фильтрацию по media_type
-        let movies_only = db.list_root_films(&FilmFilter {
-            media_type: Some(MediaType::Movie),
-            ..FilmFilter::default()
-        }).unwrap();
+        let movies_only = db
+            .list_root_films(&FilmFilter {
+                media_type: Some(MediaType::Movie),
+                ..FilmFilter::default()
+            })
+            .unwrap();
         assert_eq!(movies_only.len(), 1);
         assert_eq!(movies_only[0].title, "Начало");
 
-        let games_only = db.list_root_films(&FilmFilter {
-            media_type: Some(MediaType::Game),
-            ..FilmFilter::default()
-        }).unwrap();
+        let games_only = db
+            .list_root_films(&FilmFilter {
+                media_type: Some(MediaType::Game),
+                ..FilmFilter::default()
+            })
+            .unwrap();
         assert_eq!(games_only.len(), 2);
 
         // Поиск по лаунчеру и платформе
-        let steam_search = db.list_root_films(&FilmFilter {
-            search: "steam".to_owned(),
-            ..FilmFilter::default()
-        }).unwrap();
+        let steam_search = db
+            .list_root_films(&FilmFilter {
+                search: "steam".to_owned(),
+                ..FilmFilter::default()
+            })
+            .unwrap();
         assert_eq!(steam_search.len(), 1);
         assert_eq!(steam_search[0].title, "Cyberpunk 2077");
 
-        let switch_search = db.list_root_films(&FilmFilter {
-            search: "switch".to_owned(),
-            ..FilmFilter::default()
-        }).unwrap();
+        let switch_search = db
+            .list_root_films(&FilmFilter {
+                search: "switch".to_owned(),
+                ..FilmFilter::default()
+            })
+            .unwrap();
         assert_eq!(switch_search.len(), 1);
         assert_eq!(switch_search[0].title, "The Legend of Zelda");
 

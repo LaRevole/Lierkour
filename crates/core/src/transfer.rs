@@ -183,7 +183,15 @@ pub fn import_library(
     // (id, название, год, imdb_id, media_type) — для поиска дублей.
     let mut known: Vec<(i64, String, Option<u16>, String, MediaType)> = existing_films
         .iter()
-        .map(|film| (film.id, film.title.clone(), film.year, film.imdb_id.clone(), film.media_type))
+        .map(|film| {
+            (
+                film.id,
+                film.title.clone(),
+                film.year,
+                film.imdb_id.clone(),
+                film.media_type,
+            )
+        })
         .collect();
     let existing_ids: Vec<i64> = existing_films.iter().map(|film| film.id).collect();
 
@@ -470,7 +478,9 @@ pub fn export_to_csv(films: &[Film], target: &Path) -> AppResult<()> {
             film.thoughts.clone(),
             film.platform.clone().unwrap_or_default(),
             film.launcher.clone().unwrap_or_default(),
-            film.playtime_hours.map(|h| h.to_string()).unwrap_or_default(),
+            film.playtime_hours
+                .map(|h| h.to_string())
+                .unwrap_or_default(),
             film.completion_status.clone().unwrap_or_default(),
         ])?;
     }
@@ -784,10 +794,34 @@ mod tests {
             completion_status: None,
         };
 
-        assert!(is_duplicate(&film, "дюна", Some(2021), "", MediaType::Movie));
-        assert!(is_duplicate(&film, "другое", Some(1999), "tt1160419", MediaType::Movie));
-        assert!(!is_duplicate(&film, "Дюна", Some(1984), "", MediaType::Movie));
-        assert!(!is_duplicate(&film, "дюна", Some(2021), "", MediaType::Game));
+        assert!(is_duplicate(
+            &film,
+            "дюна",
+            Some(2021),
+            "",
+            MediaType::Movie
+        ));
+        assert!(is_duplicate(
+            &film,
+            "другое",
+            Some(1999),
+            "tt1160419",
+            MediaType::Movie
+        ));
+        assert!(!is_duplicate(
+            &film,
+            "Дюна",
+            Some(1984),
+            "",
+            MediaType::Movie
+        ));
+        assert!(!is_duplicate(
+            &film,
+            "дюна",
+            Some(2021),
+            "",
+            MediaType::Game
+        ));
     }
 
     #[test]

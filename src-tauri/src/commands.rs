@@ -446,8 +446,7 @@ pub async fn import_backup_zip(
     tokio::task::spawn_blocking(move || {
         let mut db_lock = db.lock().map_err(|e| e.to_string())?;
         let p = Path::new(&source_path);
-        lierkour_core::transfer::import_library(&mut db_lock, &paths, p)
-            .map_err(|e| e.to_string())
+        lierkour_core::transfer::import_library(&mut db_lock, &paths, p).map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| format!("Execution error: {e}"))?

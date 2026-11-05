@@ -651,25 +651,33 @@ impl NewFilm {
         if let Some(ref platform) = self.platform
             && platform.chars().count() > Self::MAX_PLATFORM_CHARS
         {
-            return Err(FilmValidationError::PlatformTooLong(Self::MAX_PLATFORM_CHARS));
+            return Err(FilmValidationError::PlatformTooLong(
+                Self::MAX_PLATFORM_CHARS,
+            ));
         }
 
         if let Some(ref launcher) = self.launcher
             && launcher.chars().count() > Self::MAX_LAUNCHER_CHARS
         {
-            return Err(FilmValidationError::LauncherTooLong(Self::MAX_LAUNCHER_CHARS));
+            return Err(FilmValidationError::LauncherTooLong(
+                Self::MAX_LAUNCHER_CHARS,
+            ));
         }
 
         if let Some(ref status) = self.completion_status
             && status.chars().count() > Self::MAX_COMPLETION_STATUS_CHARS
         {
-            return Err(FilmValidationError::CompletionStatusTooLong(Self::MAX_COMPLETION_STATUS_CHARS));
+            return Err(FilmValidationError::CompletionStatusTooLong(
+                Self::MAX_COMPLETION_STATUS_CHARS,
+            ));
         }
 
         if let Some(hours) = self.playtime_hours
             && hours > Self::MAX_PLAYTIME_HOURS
         {
-            return Err(FilmValidationError::PlaytimeOutOfRange(Self::MAX_PLAYTIME_HOURS));
+            return Err(FilmValidationError::PlaytimeOutOfRange(
+                Self::MAX_PLAYTIME_HOURS,
+            ));
         }
 
         Ok(())
@@ -966,14 +974,18 @@ mod tests {
         game.playtime_hours = Some(200_000);
         assert_eq!(
             game.validate(),
-            Err(FilmValidationError::PlaytimeOutOfRange(NewFilm::MAX_PLAYTIME_HOURS))
+            Err(FilmValidationError::PlaytimeOutOfRange(
+                NewFilm::MAX_PLAYTIME_HOURS
+            ))
         );
         game.playtime_hours = Some(120);
 
         game.platform = Some("P".repeat(NewFilm::MAX_PLATFORM_CHARS + 1));
         assert_eq!(
             game.validate(),
-            Err(FilmValidationError::PlatformTooLong(NewFilm::MAX_PLATFORM_CHARS))
+            Err(FilmValidationError::PlatformTooLong(
+                NewFilm::MAX_PLATFORM_CHARS
+            ))
         );
     }
 }

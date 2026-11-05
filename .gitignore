@@ -10,3 +10,5 @@ src-tauri/gen/
 .env
 *.log
 LRCC.txt
+ReadmeRelease.md
+ReadmeRepository.md
