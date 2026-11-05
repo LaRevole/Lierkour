@@ -1,4 +1,6 @@
-/target
+target/
+crates/*/Cargo.lock
+src-tauri/gen/
 /dist
 *.db
 *.db-shm

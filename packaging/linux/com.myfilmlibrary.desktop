@@ -1,0 +1,12 @@
+[Desktop Entry]
+Name=MyFilmLibrary
+GenericName=Фильмотека
+Comment=Локальная коллекция фильмов, сериалов и аниме
+Exec=myfilmlibrary-app %U
+Icon=myfilmlibrary
+Terminal=false
+Type=Application
+Categories=AudioVideo;Video;Database;
+StartupWMClass=myfilmlibrary-app
+MimeType=x-scheme-handler/myfilmlibrary;
+

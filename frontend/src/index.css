@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+html, body {
+  overflow-x: hidden;
+  overflow-y: auto;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Разрешаем выделение текста только внутри текстовых полей */
+input, textarea {
+  user-select: text;
+  -webkit-user-select: text;
+}
